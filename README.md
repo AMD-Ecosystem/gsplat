@@ -43,7 +43,7 @@ We provide a set of examples to get you started! Below you can find the details 
 - Install the dependencies and download the test data set
    ```bash 
    cd examples
-   pip install -r examples/requirements.txt
+   ./install_dependencies.sh
    python datasets/download_dataset.py
   ```
 - To run the examples refer to the docs below.
