@@ -4,6 +4,7 @@ import os.path as osp
 import pathlib
 import platform
 import sys
+import re
 
 from setuptools import find_packages, setup
 
@@ -14,6 +15,56 @@ import torch
 __version__ = None
 exec(open("gsplat/version.py", "r").read())
 import subprocess
+
+def get_rocm_arch():
+    """
+    Runs rocminfo and extracts the GPU architecture (gfx code).
+    
+    Returns:
+        str: The gfx code (e.g., 'gfx942', 'gfx90a'), or 'gfx942' as fallback.
+    """
+    try:
+        # Run rocminfo command
+        result = subprocess.run(
+            ['rocminfo'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # Parse the output to find the gfx architecture
+        # Look for lines like "Name:                    gfx942"
+        output = result.stdout
+        
+        # Search for gfx code pattern
+        match = re.search(r'Name:\s+(gfx[0-9a-z]+)', output)
+        if match:
+            gfx_code = match.group(1)
+            print(f"Detected ROCm GPU architecture: {gfx_code}")
+            return gfx_code
+        
+        # Alternative pattern: sometimes it appears as "gfxXXX" directly
+        match = re.search(r'\b(gfx[0-9a-z]+)\b', output)
+        if match:
+            gfx_code = match.group(1)
+            print(f"Detected ROCm GPU architecture: {gfx_code}")
+            return gfx_code
+            
+        print("Warning: Could not detect GPU architecture from rocminfo, using default gfx942")
+        return "gfx942"
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error running rocminfo: {e}")
+        print("Using default architecture: gfx942")
+        return "gfx942"
+    except FileNotFoundError:
+        print("Error: rocminfo not found. Make sure ROCm is installed and in PATH.")
+        print("Using default architecture: gfx942")
+        return "gfx942"
+    except Exception as e:
+        print(f"Unexpected error getting ROCm architecture: {e}")
+        print("Using default architecture: gfx942")
+        return "gfx942"
 
 def is_git_repo(folder_path):
     """
@@ -125,7 +176,9 @@ def get_extensions():
         from torch.utils.cpp_extension import CUDAExtension
         print("ROCM detected, compiling with HIP support...")
         from torch.utils.cpp_extension import CppExtension
-
+        # Get the GPU architecture dynamically
+        gpu_arch = get_rocm_arch()
+        print(f"gpu arch is set to {gpu_arch}")
         conda_prefix = os.getenv("CONDA_PREFIX")
         conda_lib_path = f"{conda_prefix}/lib"
         conda_pip_packages = f"{conda_lib_path}/python3.11/site-packages"
@@ -150,7 +203,7 @@ def get_extensions():
         extra_compile_args["cxx"] += ["-DAT_PARALLEL_OPENMP"]
         extra_compile_args["cxx"] += ["-fopenmp"]
 
-        hipcc_flags = [ "-D__HIP_PLATFORM_AMD__", "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE", "-DUSE_ROCM" , "--offload-arch=gfx942"]
+        hipcc_flags = [ "-D__HIP_PLATFORM_AMD__", "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE", "-DUSE_ROCM" , f"--offload-arch={gpu_arch}"]
         if WITH_SYMBOLS:
             hipcc_flags += ["-g", "-ggdb" , "-O0"]
         else:
@@ -187,7 +240,7 @@ def get_extensions():
             define_macros=define_macros,
             undef_macros=undef_macros,
             extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
+            extra_link_args=extra_link_args
         )
         return [extension]
     else:
