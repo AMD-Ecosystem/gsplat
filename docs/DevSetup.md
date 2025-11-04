@@ -25,6 +25,7 @@ Before running the steps, ensure that you have [ROCm](https://rocm.docs.amd.com/
 - Install glm dependency
    
   ```bash
+  apt-get update && apt-get install -y cmake
   cd gsplat/cuda/csrc/third_party/glm
   cmake \
       -DGLM_BUILD_TESTS=OFF \
