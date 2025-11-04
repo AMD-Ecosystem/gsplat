@@ -17,9 +17,15 @@ GSPLAT  for AMD ROCm™ 1.0.0 depends directly on NumPy and PyTorch for AMD ROCm
 
  - Install [Pytorch](https://pytorch.org/get-started/locally/) first. The easiet way is the use the official docker image which has pytorch for ROCm.
 
+   Rocm 6.4
     ```bash
-    docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true   --shm-size=128GB --network=host --device=/dev/kfd  --device=/dev/dri --group-add video -it   -v $HOME:$HOME --name rocm_pytorch rocm/pytorch:latest 
+    docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true   --shm-size=128GB --network=host --device=/dev/kfd  --device=/dev/dri --group-add video -it   -v $HOME:$HOME --name rocm/pytorch:rocm6.4.3_ubuntu24.04_py3.12_pytorch_release_2.6.0 
     ```
+
+   Rocm 7.0
+   ```bash
+   docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true   --shm-size=128GB --network=host --device=/dev/kfd  --device=/dev/dri --group-add video -it   -v $HOME:$HOME --name rocm/pytorch:rocm7.0_ubuntu24.04_py3.12_pytorch_release_2.8.0
+   ```
  
 - Install the gsplat from the AMD hosted PYPI repoitory.
 
