@@ -176,8 +176,8 @@ def get_extensions():
         from torch.utils.cpp_extension import CUDAExtension
         print("ROCM detected, compiling with HIP support...")
         from torch.utils.cpp_extension import CppExtension
-        # Get the GPU architecture dynamically
-        gpu_arch = get_rocm_arch()
+        # Get the GPU architecture dynamically, for code coverage we can default to gfx942
+		gpu_arch = "gfx942" if ENABLE_TEST_COVERAGE else get_rocm_arch()
         print(f"gpu arch is set to {gpu_arch}")
         conda_prefix = os.getenv("CONDA_PREFIX")
         conda_lib_path = f"{conda_prefix}/lib"
