@@ -5,66 +5,181 @@ import pathlib
 import platform
 import sys
 import re
+import site
+import subprocess
 
 from setuptools import find_packages, setup
 
 IS_ROCM = True
-ROCM_HOME = "/opt/rocm"
+
+
+def _find_rocm_sdk_in_site_packages():
+    for sp in site.getsitepackages() + [site.getusersitepackages()]:
+        if not sp:
+            continue
+        sdk_devel = osp.join(sp, "_rocm_sdk_devel")
+        if osp.isdir(osp.join(sdk_devel, "include", "hip")):
+            return sdk_devel
+        sdk_core = osp.join(sp, "_rocm_sdk_core")
+        if osp.isdir(osp.join(sdk_core, "include", "hip")):
+            return sdk_core
+    return None
+
+
+def _bootstrap_rocm_env():
+    """Point ROCm tooling at pip SDK (devel preferred) before torch import."""
+    rocm_home = os.environ.get("ROCM_HOME")
+    if not rocm_home or not osp.isdir(osp.join(rocm_home, "include", "hip")):
+        rocm_home = None
+        if osp.isdir(osp.join("/opt/rocm", "include", "hip")):
+            rocm_home = "/opt/rocm"
+        else:
+            rocm_home = _find_rocm_sdk_in_site_packages() or "/opt/rocm"
+
+    rocm_home = osp.abspath(rocm_home)
+    rocm_bin = osp.join(rocm_home, "bin")
+    rocm_llvm_bin = osp.join(rocm_home, "lib", "llvm", "bin")
+    os.environ["ROCM_HOME"] = rocm_home
+    os.environ["ROCM_PATH"] = rocm_home
+    os.environ["PATH"] = os.pathsep.join(
+        [rocm_bin, rocm_llvm_bin, os.environ.get("PATH", "")]
+    )
+
+
+if IS_ROCM:
+    _bootstrap_rocm_env()
+
 import torch
 
 __version__ = None
 exec(open("gsplat/version.py", "r").read())
-import subprocess
 
-def get_rocm_arch():
+
+def get_rocm_sdk_root():
+    """Resolve ROCm SDK root: ROCM_HOME, devel, core, or /opt/rocm."""
+    rocm_home = os.environ.get("ROCM_HOME")
+    if rocm_home and osp.isdir(osp.join(rocm_home, "include", "hip")):
+        return osp.abspath(rocm_home)
+    if osp.isdir(osp.join("/opt/rocm", "include", "hip")):
+        return "/opt/rocm"
+    found = _find_rocm_sdk_in_site_packages()
+    if found:
+        return found
+    return "/opt/rocm"
+
+
+def get_rocm_include_dirs(rocm_home):
+    """Collect ROCm-related include directories (HIP, thrust, rocprim, hipcub)."""
+    repo_root = osp.dirname(osp.abspath(__file__))
+    sdk_include = osp.join(rocm_home, "include")
+    include_dirs = [
+        sdk_include,
+        osp.expanduser("~/.local/include"),
+    ]
+
+    extra_includes = os.environ.get("ROCM_EXTRA_INCLUDES", "")
+    if extra_includes:
+        include_dirs.extend(
+            p.strip() for p in extra_includes.split(os.pathsep) if p.strip()
+        )
+
+    sdk_has_thrust = osp.isfile(osp.join(sdk_include, "thrust", "complex.h"))
+    sdk_has_rocprim = osp.isfile(
+        osp.join(sdk_include, "rocprim", "type_traits.hpp")
+    )
+    sdk_has_hipcub = osp.isfile(osp.join(sdk_include, "hipcub", "hipcub.hpp"))
+    if sdk_has_thrust and sdk_has_rocprim and sdk_has_hipcub:
+        # Prefer the pip SDK tree as a single consistent header set.
+        seen = set()
+        unique_dirs = []
+        for d in include_dirs:
+            if d not in seen and osp.isdir(d):
+                seen.add(d)
+                unique_dirs.append(d)
+        return unique_dirs
+
+    thrust_candidates = [
+        os.environ.get("ROCM_THRUST_INCLUDE"),
+        osp.join(repo_root, ".rocm_deps", "rocthrust"),
+        osp.expanduser("~/.local/rocthrust"),
+        sdk_include,
+        "/opt/rocm/include",
+    ]
+    rocprim_candidates = [
+        osp.join(repo_root, ".rocm_deps", "rocprim", "rocprim", "include"),
+        sdk_include,
+        "/opt/rocm/include",
+    ]
+    hipcub_candidates = [
+        osp.join(repo_root, ".rocm_deps", "hipcub", "hipcub", "include"),
+        sdk_include,
+        "/opt/rocm/include",
+    ]
+
+    for path in thrust_candidates:
+        if path and osp.isfile(osp.join(path, "thrust", "complex.h")):
+            include_dirs.append(path)
+            break
+
+    for path in rocprim_candidates:
+        if path and osp.isfile(osp.join(path, "rocprim", "type_traits.hpp")):
+            include_dirs.append(path)
+            break
+
+    for path in hipcub_candidates:
+        if path and osp.isfile(osp.join(path, "hipcub", "hipcub.hpp")):
+            include_dirs.append(path)
+            break
+
+    # Deduplicate while preserving order.
+    seen = set()
+    unique_dirs = []
+    for d in include_dirs:
+        if d not in seen and osp.isdir(d):
+            seen.add(d)
+            unique_dirs.append(d)
+    return unique_dirs
+
+
+def get_rocm_archs():
     """
-    Runs rocminfo and extracts the GPU architecture (gfx code).
-    
-    Returns:
-        str: The gfx code (e.g., 'gfx942', 'gfx90a'), or 'gfx942' as fallback.
+    Return target GPU architectures for HIP offload.
+
+    Uses ROCM_ARCHS env (comma-separated), else rocminfo if available,
+    else defaults to gfx942 and gfx950 for cross-compile without a GPU.
     """
+    env_archs = os.environ.get("ROCM_ARCHS", "").strip()
+    if env_archs:
+        archs = [a.strip() for a in env_archs.split(",") if a.strip()]
+        print(f"Using ROCM_ARCHS from environment: {archs}")
+        return archs
+
+    if ENABLE_TEST_COVERAGE:
+        return ["gfx942"]
+
     try:
-        # Run rocminfo command
         result = subprocess.run(
-            ['rocminfo'],
+            ["rocminfo"],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
         )
-        
-        # Parse the output to find the gfx architecture
-        # Look for lines like "Name:                    gfx942"
-        output = result.stdout
-        
-        # Search for gfx code pattern
-        match = re.search(r'Name:\s+(gfx[0-9a-z]+)', output)
+        match = re.search(r"Name:\s+(gfx[0-9a-z]+)", result.stdout)
+        if not match:
+            match = re.search(r"\b(gfx[0-9a-z]+)\b", result.stdout)
         if match:
             gfx_code = match.group(1)
-            print(f"Detected ROCm GPU architecture: {gfx_code}")
-            return gfx_code
-        
-        # Alternative pattern: sometimes it appears as "gfxXXX" directly
-        match = re.search(r'\b(gfx[0-9a-z]+)\b', output)
-        if match:
-            gfx_code = match.group(1)
-            print(f"Detected ROCm GPU architecture: {gfx_code}")
-            return gfx_code
-            
-        print("Warning: Could not detect GPU architecture from rocminfo, using default gfx942")
-        return "gfx942"
-        
-    except subprocess.CalledProcessError as e:
-        print(f"Error running rocminfo: {e}")
-        print("Using default architecture: gfx942")
-        return "gfx942"
-    except FileNotFoundError:
-        print("Error: rocminfo not found. Make sure ROCm is installed and in PATH.")
-        print("Using default architecture: gfx942")
-        return "gfx942"
-    except Exception as e:
-        print(f"Unexpected error getting ROCm architecture: {e}")
-        print("Using default architecture: gfx942")
-        return "gfx942"
+            print(f"Detected ROCm GPU architecture from rocminfo: {gfx_code}")
+            return [gfx_code]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    default_archs = ["gfx942", "gfx950"]
+    print(
+        "rocminfo unavailable or no GPU detected; "
+        f"using default architectures: {default_archs}"
+    )
+    return default_archs
 
 def is_git_repo(folder_path):
     """
@@ -175,72 +290,97 @@ def get_extensions():
     if IS_ROCM:
         from torch.utils.cpp_extension import CUDAExtension
         print("ROCM detected, compiling with HIP support...")
-        from torch.utils.cpp_extension import CppExtension
-        # Get the GPU architecture dynamically, for code coverage we can default to gfx942
-        gpu_arch = "gfx942" if ENABLE_TEST_COVERAGE else get_rocm_arch()
-        print(f"gpu arch is set to {gpu_arch}")
-        conda_prefix = os.getenv("CONDA_PREFIX")
-        conda_lib_path = f"{conda_prefix}/lib"
-        conda_pip_packages = f"{conda_lib_path}/python3.11/site-packages"
+        rocm_home = get_rocm_sdk_root()
+        rocm_bin = osp.join(rocm_home, "bin")
+        rocm_llvm_bin = osp.join(rocm_home, "lib", "llvm", "bin")
+        os.environ["ROCM_HOME"] = rocm_home
+        os.environ["ROCM_PATH"] = rocm_home
+        os.environ["PATH"] = os.pathsep.join(
+            [rocm_bin, rocm_llvm_bin, os.environ.get("PATH", "")]
+        )
+        rocm_lib = osp.join(rocm_home, "lib")
+        gpu_archs = get_rocm_archs()
+        print(f"ROCm SDK root: {rocm_home}")
+        print(f"GPU architectures: {gpu_archs}")
 
-        # Use relative path instead of hardcoded absolute path
-        extensions_dir = osp.join("gsplat","cuda")
-        sources = glob.glob(osp.join(extensions_dir, "csrc", "*.cu")) + glob.glob(osp.join(extensions_dir, "csrc", "*.cpp"))
+        extensions_dir = osp.join("gsplat", "cuda")
+        sources = glob.glob(osp.join(extensions_dir, "csrc", "*.cu")) + glob.glob(
+            osp.join(extensions_dir, "csrc", "*.cpp")
+        )
         sources += [osp.join(extensions_dir, "ext.cpp")]
 
         undef_macros = []
         define_macros = []
 
-        extra_compile_args = {"cxx": ["-D__HIP_PLATFORM_AMD__" , "-Wno-sign-compare", "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE", "-DUSE_ROCM"]}
+        cxx_flags = [
+            "-D__HIP_PLATFORM_AMD__",
+            "-Wno-sign-compare",
+            "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
+            "-DUSE_ROCM",
+            "-DAT_PARALLEL_OPENMP",
+            "-fopenmp",
+        ]
         if WITH_SYMBOLS:
-            extra_compile_args["cxx"] += ["-g", "-O0"]
+            cxx_flags += ["-g", "-O0"]
         else:
-            extra_compile_args = {"cxx": ["-O3", "-Wno-attributes", "-Wno-switch", "-Wno-comment"]}
+            cxx_flags += ["-O3", "-Wno-attributes", "-Wno-switch", "-Wno-comment"]
+        extra_compile_args = {"cxx": cxx_flags}
 
-        extra_link_args = ["-s"]
+        extra_link_args = [] if WITH_SYMBOLS else ["-s"]
 
-        # Compile with OpenMP
-        extra_compile_args["cxx"] += ["-DAT_PARALLEL_OPENMP"]
-        extra_compile_args["cxx"] += ["-fopenmp"]
-
-        hipcc_flags = [ "-D__HIP_PLATFORM_AMD__", "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE", "-DUSE_ROCM" , f"--offload-arch={gpu_arch}"]
+        hipcc_flags = [
+            "-D__HIP_PLATFORM_AMD__",
+            "-D__HIP_PLATFORM_HCC__=1",
+            "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
+            "-DUSE_ROCM",
+            f"--rocm-path={rocm_home}",
+        ]
+        for arch in gpu_archs:
+            hipcc_flags.append(f"--offload-arch={arch}")
         if WITH_SYMBOLS:
-            hipcc_flags += ["-g", "-ggdb" , "-O0"]
+            hipcc_flags += ["-g", "-ggdb", "-O0"]
         else:
-            hipcc_flags += ["-O3" ]
+            hipcc_flags += ["-O3"]
         if LINE_INFO:
             hipcc_flags += ["-gline-tables-only"]
         if torch.version.hip:
-            # USE_ROCM was added to later versions of PyTorch.
-            # Define here to support older PyTorch versions as well:
             define_macros += [("USE_ROCM", "1")]
             undef_macros += ["__HIP_NO_HALF_CONVERSIONS__"]
         if ENABLE_TEST_COVERAGE:
-            extra_compile_args['cxx'] += ['-fprofile-instr-generate', '-fcoverage-mapping', '-Qunused-arguments', '--gcc-toolchain=/usr']
-            hipcc_flags += ['-fprofile-instr-generate', '-fcoverage-mapping']
-            extra_link_args += ['-fprofile-instr-generate']
-	
-	# Its still nvcc flags that are used for HIP compilation
+            extra_compile_args["cxx"] += [
+                "-fprofile-instr-generate",
+                "-fcoverage-mapping",
+                "-Qunused-arguments",
+                "--gcc-toolchain=/usr",
+            ]
+            hipcc_flags += ["-fprofile-instr-generate", "-fcoverage-mapping"]
+            extra_link_args += ["-fprofile-instr-generate"]
+
         extra_compile_args["nvcc"] = hipcc_flags
         current_dir = pathlib.Path(__file__).parent.resolve()
 
-        include_dirs = [
-            osp.join(current_dir, "gsplat", "cuda", "include"),
-            f"{os.environ['HOME']}/.local/include",
-            f"/opt/conda/include",
-            f"/opt/conda/envs/py_3.12/lib/python3.12/site-packages/",
-            f"/opt/rocm/include",
-        ]
+        include_dirs = get_rocm_include_dirs(rocm_home)
+        include_dirs.insert(
+            0, osp.join(current_dir, "gsplat", "cuda", "include")
+        )
+        print(f"ROCm include dirs: {include_dirs}")
+        conda_prefix = os.getenv("CONDA_PREFIX")
+        if conda_prefix:
+            include_dirs.append(osp.join(conda_prefix, "include"))
+
+        library_dirs = [rocm_lib]
+        if conda_prefix:
+            library_dirs.append(osp.join(conda_prefix, "lib"))
 
         extension = CUDAExtension(
-            # Make sure this matches your package structure
-            "gsplat.csrc",  # This changes the extension module name to be more standard
+            "gsplat.csrc",
             sources,
             include_dirs=include_dirs,
+            library_dirs=library_dirs,
             define_macros=define_macros,
             undef_macros=undef_macros,
             extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args
+            extra_link_args=extra_link_args,
         )
         return [extension]
     else:

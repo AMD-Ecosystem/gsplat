@@ -6,6 +6,12 @@
 #include "Intersect.h"
 #include "Utils.cuh"
 
+#if USE_ROCM
+#include <hipcub/device/device_radix_sort.hpp>
+#include <hipcub/device/device_segmented_radix_sort.hpp>
+#include <hipcub/util_type.hpp>
+#endif
+
 namespace gsplat {
 
 namespace cg = cooperative_groups;
