@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2023-2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import glob
 import os
 import os.path as osp
@@ -7,8 +23,6 @@ import sys
 import re
 import site
 import subprocess
-
-from setuptools import find_packages, setup
 
 IS_ROCM = True
 
@@ -51,8 +65,18 @@ if IS_ROCM:
 
 import torch
 
+# Read ``__version__`` from ``gsplat/version.py`` when the rest of the source
+# tree is alongside us (the canonical context for ``pip install`` / wheel
+# builds). When setup.py is imported standalone (e.g. by
+# ``docker/check_deps.sh`` from a directory with only setup.py) we leave
+# ``__version__`` as ``None`` — the dep-extraction path doesn't need it, and
+# ``_setup()`` will surface a clear setuptools error if invoked without it.
 __version__ = None
-exec(open("gsplat/version.py", "r").read())
+_SETUP_DIR = os.path.dirname(os.path.abspath(__file__))
+_version_file = os.path.join(_SETUP_DIR, "gsplat", "version.py")
+if os.path.exists(_version_file):
+    with open(_version_file, "r") as f:
+        exec(f.read())
 
 
 def get_rocm_sdk_root():
@@ -181,6 +205,7 @@ def get_rocm_archs():
     )
     return default_archs
 
+
 def is_git_repo(folder_path):
     """
     Checks if a folder is a Git repository by running 'git rev-parse --git-dir'.
@@ -191,66 +216,40 @@ def is_git_repo(folder_path):
     Returns:
         bool: True if it is a Git repository, False otherwise.
     """
-    # First, check if the folder path is a valid directory
     if not os.path.isdir(folder_path):
         return False
 
     try:
-        # Run the git command
         result = subprocess.run(
-            ['git', 'rev-parse', '--git-dir'],
-            cwd=folder_path,
-            capture_output=True,
-            text=True
-        )
-
-        # The command returns an exit code of 0 if it's a repo
-        return result.returncode == 0
-
-    except FileNotFoundError:
-        # This exception is raised if 'git' is not in the system's PATH
-        print("Error: Git is not installed or not in your system's PATH.")
-        return False
-    except Exception as e:
-        # Handle other unexpected errors
-        print(f"An unexpected error occurred: {e}")
-        return False
-
-def get_git_rev(folder_path):
-    """
-    Checks if a folder is a Git repository and returns the latest commit SHA
-    of the main branch using Git command-line tools.
-
-    Args:
-        folder_path (str): The path to the folder to check.
-
-    Returns:
-        str: The SHA of the latest commit on the main branch, or None if
-             it's not a Git repository or the main branch doesn't exist.
-    """
-    try:
-        # Use subprocess to run 'git rev-parse main' to get the commit hash
-        # 'rev-parse' is a low-level command used to translate a human-readable
-        # name into an SHA-1.
-        command = ['git', 'rev-parse', '--short' ,"HEAD"]
-
-        # Run the command in the specified folder
-        result = subprocess.run(
-            command,
+            ["git", "rev-parse", "--git-dir"],
             cwd=folder_path,
             capture_output=True,
             text=True,
-            check=True
         )
+        return result.returncode == 0
+    except FileNotFoundError:
+        print("Error: Git is not installed or not in your system's PATH.")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return False
 
-        # The output is the commit hash
-        commit_sha = result.stdout.strip()
-        return commit_sha
 
+def get_git_rev(folder_path):
+    """
+    Return the short SHA of HEAD for the given folder, or empty string on error.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=folder_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        # This error is raised if the command fails, which happens if 'main'
-        # branch doesn't exist
-        print(f"Error: The #{branch_name} branch does not exist or another error occurred: {e}")
+        print(f"Error reading git revision: {e}")
         return ""
     except FileNotFoundError:
         print("Error: Git is not installed or not in your system's PATH.")
@@ -258,20 +257,21 @@ def get_git_rev(folder_path):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         return ""
-    return ""
 
-if is_git_repo:
+
+if is_git_repo(os.getcwd()) and __version__ is not None:
     git_rev = get_git_rev(os.getcwd())
-    __version__ += f"+{git_rev}"
+    if git_rev:
+        __version__ += f"+{git_rev}"
 
 print(f"VERSION = {__version__}")
 
 URL = "https://github.com/rocm/gsplat"
 
 BUILD_NO_CUDA = os.getenv("BUILD_NO_CUDA", "0") == "1"
-WITH_SYMBOLS =  os.getenv("WITH_SYMBOLS", "0") == "1"
+BUILD_EXPERIMENTAL = os.getenv("BUILD_EXPERIMENTAL", "1") == "1"
+WITH_SYMBOLS = os.getenv("WITH_SYMBOLS", "0") == "1"
 LINE_INFO = os.getenv("LINE_INFO", "0") == "1"
-
 ENABLE_TEST_COVERAGE = os.getenv("ENABLE_TEST_COVERAGE", "0") == "1"
 
 MAX_JOBS = os.getenv("MAX_JOBS")
@@ -281,184 +281,298 @@ if not MAX_JOBS:
     os.environ["MAX_JOBS"] = "10"
     print(f"Setting MAX_JOBS to {os.environ['MAX_JOBS']}")
 
+
+def _read_config_variable(name: str) -> str:
+    """Read a scalar variable from the repository's simple ``config.yaml``."""
+
+    config_path = os.path.join(_SETUP_DIR, "config.yaml")
+    if not os.path.exists(config_path):
+        raise RuntimeError(f"{config_path} is required to read {name}")
+
+    prefix = f"{name}:"
+    with open(config_path, "r") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if line.startswith(prefix):
+                return line.split(":", 1)[1].strip().strip("\"'")
+
+    raise RuntimeError(f"{name} is not set in {config_path}")
+
+
+def _detect_cupy_requirement() -> str:
+    """Pick a CuPy distribution that matches the local CUDA toolkit.
+
+    The bare ``cupy`` package on PyPI is a source distribution that compiles
+    against the local CUDA toolkit and routinely fails when stub libs or
+    optional headers (e.g. cusparseLt) aren't present. Prefer a prebuilt
+    wheel keyed on the detected CUDA major version. Set ``CUPY_PACKAGE`` to
+    override (e.g. ``CUPY_PACKAGE=cupy-cuda12x`` or ``CUPY_PACKAGE=cupy``).
+    """
+    override = os.getenv("CUPY_PACKAGE")
+    if override:
+        return override
+
+    import warnings
+
+    cuda_roots = []
+    for env in ("CUDA_HOME", "CUDA_PATH"):
+        root = os.environ.get(env)
+        if root:
+            cuda_roots.append(root)
+    cuda_roots.append("/usr/local/cuda")
+
+    nvcc_candidates = [os.path.join(r, "bin", "nvcc") for r in cuda_roots]
+    nvcc_candidates.append("nvcc")
+
+    for nvcc in nvcc_candidates:
+        try:
+            out = subprocess.check_output(
+                [nvcc, "--version"], stderr=subprocess.STDOUT, text=True
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+            continue
+        m = re.search(r"release (\d+)\.", out)
+        if m:
+            return f"cupy-cuda{m.group(1)}x"
+        warnings.warn(
+            f"nvcc at {nvcc} returned an unparseable --version output; "
+            "skipping this candidate.",
+            stacklevel=2,
+        )
+
+    for root in cuda_roots:
+        try:
+            with open(os.path.join(root, "include", "cuda.h")) as f:
+                content = f.read()
+        except (FileNotFoundError, OSError):
+            continue
+        m = re.search(r"^#define\s+CUDA_VERSION\s+(\d+)", content, re.MULTILINE)
+        if m:
+            return f"cupy-cuda{int(m.group(1)) // 1000}x"
+
+    return "cupy"
+
+
+INSTALL_REQUIRES = [
+    "ninja",
+    "numpy",
+    "jaxtyping",
+    "nvtx",
+    "rich>=12",
+    "torch>=2.7",
+    "typing_extensions; python_version<'3.8'",
+]
+
+
+def get_extras_require() -> dict:
+    """Return the ``extras_require`` mapping consumed by ``setup()``."""
+    return {
+        "lidar": [
+            "scipy",
+        ],
+        "examples": [
+            "Pillow",
+            "tqdm",
+            "tyro",
+            "imageio>=2.37.2",
+        ],
+        "dev": [
+            "black[jupyter]==22.3.0",
+            f"clang-format=={_read_config_variable('CLANG_FORMAT_VERSION')}",
+            "isort==5.10.1",
+            "pylint==2.13.4",
+            "pytest",
+            "pytest-check",
+            "pytest-env",
+            "pytest-xdist==2.5.0",
+            "Pillow",
+            "tqdm",
+            "typeguard>=2.13.3",
+            "pyyaml>=6.0.1",
+            "build",
+            "twine",
+            _detect_cupy_requirement(),
+            "nerfacc>=0.5.3",
+            "PLAS @ git+https://github.com/fraunhoferhhi/PLAS.git",
+            "imageio>=2.37.2",
+            "torchpq>=0.3.0.6",
+        ],
+    }
+
+
 def get_ext():
     from torch.utils.cpp_extension import BuildExtension
+
     return BuildExtension.with_options(no_python_abi_suffix=True, use_ninja=True)
 
 
-def get_extensions():
-    if IS_ROCM:
-        from torch.utils.cpp_extension import CUDAExtension
-        print("ROCM detected, compiling with HIP support...")
-        rocm_home = get_rocm_sdk_root()
-        rocm_bin = osp.join(rocm_home, "bin")
-        rocm_llvm_bin = osp.join(rocm_home, "lib", "llvm", "bin")
-        os.environ["ROCM_HOME"] = rocm_home
-        os.environ["ROCM_PATH"] = rocm_home
-        os.environ["PATH"] = os.pathsep.join(
-            [rocm_bin, rocm_llvm_bin, os.environ.get("PATH", "")]
-        )
-        rocm_lib = osp.join(rocm_home, "lib")
-        gpu_archs = get_rocm_archs()
-        print(f"ROCm SDK root: {rocm_home}")
-        print(f"GPU architectures: {gpu_archs}")
+def _load_build_module(module_name, build_py_path):
+    import importlib.util
 
-        extensions_dir = osp.join("gsplat", "cuda")
-        sources = glob.glob(osp.join(extensions_dir, "csrc", "*.cu")) + glob.glob(
-            osp.join(extensions_dir, "csrc", "*.cpp")
-        )
-        sources += [osp.join(extensions_dir, "ext.cpp")]
+    spec = importlib.util.spec_from_file_location(module_name, build_py_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-        undef_macros = []
-        define_macros = []
 
-        cxx_flags = [
-            "-D__HIP_PLATFORM_AMD__",
-            "-Wno-sign-compare",
-            "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
-            "-DUSE_ROCM",
-            "-DAT_PARALLEL_OPENMP",
-            "-fopenmp",
-        ]
-        if WITH_SYMBOLS:
-            cxx_flags += ["-g", "-O0"]
-        else:
-            cxx_flags += ["-O3", "-Wno-attributes", "-Wno-switch", "-Wno-comment"]
-        extra_compile_args = {"cxx": cxx_flags}
+def _merge_include_dirs(*dir_lists):
+    seen = set()
+    merged = []
+    for dir_list in dir_lists:
+        for d in dir_list:
+            if d not in seen and osp.isdir(d):
+                seen.add(d)
+                merged.append(d)
+    return merged
 
-        extra_link_args = [] if WITH_SYMBOLS else ["-s"]
 
-        hipcc_flags = [
-            "-D__HIP_PLATFORM_AMD__",
-            "-D__HIP_PLATFORM_HCC__=1",
-            "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
-            "-DUSE_ROCM",
-            f"--rocm-path={rocm_home}",
-        ]
-        for arch in gpu_archs:
-            hipcc_flags.append(f"--offload-arch={arch}")
-        if WITH_SYMBOLS:
-            hipcc_flags += ["-g", "-ggdb", "-O0"]
-        else:
-            hipcc_flags += ["-O3"]
-        if LINE_INFO:
-            hipcc_flags += ["-gline-tables-only"]
-        if torch.version.hip:
-            define_macros += [("USE_ROCM", "1")]
-            undef_macros += ["__HIP_NO_HALF_CONVERSIONS__"]
-        if ENABLE_TEST_COVERAGE:
-            extra_compile_args["cxx"] += [
-                "-fprofile-instr-generate",
-                "-fcoverage-mapping",
-                "-Qunused-arguments",
-                "--gcc-toolchain=/usr",
-            ]
-            hipcc_flags += ["-fprofile-instr-generate", "-fcoverage-mapping"]
-            extra_link_args += ["-fprofile-instr-generate"]
+def _make_rocm_extension(sources, extra_include_paths):
+    """Build gsplat.csrc with upstream sources and ROCm/HIP compile flags."""
+    from torch.utils.cpp_extension import CUDAExtension
 
-        extra_compile_args["nvcc"] = hipcc_flags
-        current_dir = pathlib.Path(__file__).parent.resolve()
+    print("ROCM detected, compiling with HIP support...")
+    rocm_home = get_rocm_sdk_root()
+    rocm_bin = osp.join(rocm_home, "bin")
+    rocm_llvm_bin = osp.join(rocm_home, "lib", "llvm", "bin")
+    os.environ["ROCM_HOME"] = rocm_home
+    os.environ["ROCM_PATH"] = rocm_home
+    os.environ["PATH"] = os.pathsep.join(
+        [rocm_bin, rocm_llvm_bin, os.environ.get("PATH", "")]
+    )
+    rocm_lib = osp.join(rocm_home, "lib")
+    gpu_archs = get_rocm_archs()
+    print(f"ROCm SDK root: {rocm_home}")
+    print(f"GPU architectures: {gpu_archs}")
 
-        include_dirs = get_rocm_include_dirs(rocm_home)
-        include_dirs.insert(
-            0, osp.join(current_dir, "gsplat", "cuda", "include")
-        )
-        print(f"ROCm include dirs: {include_dirs}")
-        conda_prefix = os.getenv("CONDA_PREFIX")
-        if conda_prefix:
-            include_dirs.append(osp.join(conda_prefix, "include"))
+    undef_macros = []
+    define_macros = []
 
-        library_dirs = [rocm_lib]
-        if conda_prefix:
-            library_dirs.append(osp.join(conda_prefix, "lib"))
-
-        extension = CUDAExtension(
-            "gsplat.csrc",
-            sources,
-            include_dirs=include_dirs,
-            library_dirs=library_dirs,
-            define_macros=define_macros,
-            undef_macros=undef_macros,
-            extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
-        )
-        return [extension]
+    cxx_flags = [
+        "-D__HIP_PLATFORM_AMD__",
+        "-Wno-sign-compare",
+        "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
+        "-DUSE_ROCM",
+        "-DAT_PARALLEL_OPENMP",
+        "-fopenmp",
+    ]
+    if WITH_SYMBOLS:
+        cxx_flags += ["-g", "-O0"]
     else:
+        cxx_flags += ["-O3", "-Wno-attributes", "-Wno-switch", "-Wno-comment"]
+    extra_compile_args = {"cxx": cxx_flags}
 
-        from torch.__config__ import parallel_info
-        from torch.utils.cpp_extension import CUDAExtension
+    extra_link_args = [] if WITH_SYMBOLS else ["-s"]
 
-        extensions_dir = osp.join("gsplat", "cuda")
-        sources = glob.glob(osp.join(extensions_dir, "csrc", "*.cu")) + glob.glob(
-            osp.join(extensions_dir, "csrc", "*.cpp")
-        )
-        sources += [osp.join(extensions_dir, "ext.cpp")]
-
-        undef_macros = []
-        define_macros = []
-
-        extra_compile_args = {"cxx": ["-O3"]}
-        if not os.name == "nt":  # Not on Windows:
-            extra_compile_args["cxx"] += ["-Wno-sign-compare"]
-        extra_link_args = [] if WITH_SYMBOLS else ["-s"]
-
-        info = parallel_info()
-        if (
-            "backend: OpenMP" in info
-            and "OpenMP not found" not in info
-            and sys.platform != "darwin"
-        ):
-            extra_compile_args["cxx"] += ["-DAT_PARALLEL_OPENMP"]
-            if sys.platform == "win32":
-                extra_compile_args["cxx"] += ["/openmp"]
-            else:
-                extra_compile_args["cxx"] += ["-fopenmp"]
-        else:
-            print("Compiling without OpenMP...")
-
-        # Compile for mac arm64
-        if sys.platform == "darwin" and platform.machine() == "arm64":
-            extra_compile_args["cxx"] += ["-arch", "arm64"]
-            extra_link_args += ["-arch", "arm64"]
-
-        nvcc_flags = os.getenv("NVCC_FLAGS", "")
-        nvcc_flags = [] if nvcc_flags == "" else nvcc_flags.split(" ")
-        nvcc_flags += ["-O3", "--use_fast_math", "-std=c++17"]
-        if LINE_INFO:
-            nvcc_flags += ["-lineinfo"]
-        if torch.version.hip:
-            # USE_ROCM was added to later versions of PyTorch.
-            # Define here to support older PyTorch versions as well:
-            define_macros += [("USE_ROCM", None)]
-            undef_macros += ["__HIP_NO_HALF_CONVERSIONS__"]
-        else:
-            nvcc_flags += ["--expt-relaxed-constexpr"]
-
-    # GLM/Torch has spammy and very annoyingly verbose warnings that this suppresses
-    nvcc_flags += ["-diag-suppress", "20012,186"]
-    extra_compile_args["nvcc"] = nvcc_flags
-    if sys.platform == "win32":
-        extra_compile_args["nvcc"] += [
-            "-DWIN32_LEAN_AND_MEAN",
-            "-allow-unsupported-compiler",
+    hipcc_flags = [
+        "-D__HIP_PLATFORM_AMD__",
+        "-D__HIP_PLATFORM_HCC__=1",
+        "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
+        "-DUSE_ROCM",
+        f"--rocm-path={rocm_home}",
+    ]
+    for arch in gpu_archs:
+        hipcc_flags.append(f"--offload-arch={arch}")
+    if WITH_SYMBOLS:
+        hipcc_flags += ["-g", "-ggdb", "-O0"]
+    else:
+        hipcc_flags += ["-O3"]
+    if LINE_INFO:
+        hipcc_flags += ["-gline-tables-only"]
+    if torch.version.hip:
+        define_macros += [("USE_ROCM", "1")]
+        undef_macros += ["__HIP_NO_HALF_CONVERSIONS__"]
+    if ENABLE_TEST_COVERAGE:
+        extra_compile_args["cxx"] += [
+            "-fprofile-instr-generate",
+            "-fcoverage-mapping",
+            "-Qunused-arguments",
+            "--gcc-toolchain=/usr",
         ]
+        hipcc_flags += ["-fprofile-instr-generate", "-fcoverage-mapping"]
+        extra_link_args += ["-fprofile-instr-generate"]
 
-        current_dir = pathlib.Path(__file__).parent.resolve()
-        glm_path = osp.join(current_dir, "gsplat", "cuda", "csrc", "third_party", "glm")
-        include_dirs = [glm_path, osp.join(current_dir, "gsplat", "cuda", "include")]
+    extra_compile_args["nvcc"] = hipcc_flags
 
-        extension = CUDAExtension(
-            "gsplat.csrc",
-            sources,
-            include_dirs=include_dirs,
-            define_macros=define_macros,
-            undef_macros=undef_macros,
-            extra_compile_args=extra_compile_args,
-            extra_link_args=extra_link_args,
-        )
-        return [extension]
+    current_dir = pathlib.Path(__file__).parent.resolve()
+    include_dirs = _merge_include_dirs(
+        [osp.join(current_dir, "gsplat", "cuda", "include")],
+        get_rocm_include_dirs(rocm_home),
+        extra_include_paths,
+    )
+    print(f"ROCm include dirs: {include_dirs}")
+
+    conda_prefix = os.getenv("CONDA_PREFIX")
+    if conda_prefix:
+        include_dirs.append(osp.join(conda_prefix, "include"))
+
+    library_dirs = [rocm_lib]
+    if conda_prefix:
+        library_dirs.append(osp.join(conda_prefix, "lib"))
+
+    return CUDAExtension(
+        "gsplat.csrc",
+        sources,
+        include_dirs=include_dirs,
+        library_dirs=library_dirs,
+        define_macros=define_macros,
+        undef_macros=undef_macros,
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
+    )
+
+
+def get_extensions():
+    from torch.utils.cpp_extension import CUDAExtension
+
+    setup_dir = os.path.dirname(os.path.abspath(__file__))
+
+    gsplat_build = _load_build_module(
+        "gsplat_cuda_build", os.path.join("gsplat", "cuda", "build.py")
+    )
+    params = gsplat_build.get_build_parameters()
+    sources = [os.path.relpath(s, setup_dir) for s in params.sources]
+
+    if IS_ROCM:
+        return [_make_rocm_extension(sources, params.extra_include_paths)]
+
+    gsplat_ext = CUDAExtension(
+        "gsplat.csrc",
+        sources=sources,
+        include_dirs=params.extra_include_paths,
+        extra_compile_args={
+            "cxx": params.extra_cflags,
+            "nvcc": params.extra_cuda_cflags,
+        },
+        extra_link_args=params.extra_ldflags,
+    )
+
+    if not BUILD_EXPERIMENTAL:
+        return [gsplat_ext]
+
+    inference_build = _load_build_module(
+        "experimental_gaussian_render_inference_scene_build",
+        os.path.join("gsplat", "experimental", "render", "kernels", "cuda", "build.py"),
+    )
+    inference_params = inference_build.get_build_parameters()
+    inference_sources = [
+        os.path.relpath(s, setup_dir) for s in inference_params.sources
+    ]
+    inference_ext = CUDAExtension(
+        "gsplat.experimental.render.kernels.csrc",
+        sources=inference_sources,
+        include_dirs=inference_params.extra_include_paths,
+        extra_compile_args={
+            "cxx": inference_params.extra_cflags,
+            "nvcc": inference_params.extra_cuda_cflags,
+        },
+        extra_link_args=inference_params.extra_ldflags,
+    )
+
+    return [gsplat_ext, inference_ext]
+
 
 import torch.utils.cpp_extension as ce
+
 
 def fixed_get_compiler_abi_compatibility_and_version(compiler):
     try:
@@ -467,50 +581,62 @@ def fixed_get_compiler_abi_compatibility_and_version(compiler):
         # Fallback for clang++ "17.0git"
         return ("gcc", (17, 0))
 
+
 if not hasattr(ce, "original_get_compiler_abi_compatibility_and_version"):
-    ce.original_get_compiler_abi_compatibility_and_version = ce.get_compiler_abi_compatibility_and_version
-    ce.get_compiler_abi_compatibility_and_version = fixed_get_compiler_abi_compatibility_and_version
+    ce.original_get_compiler_abi_compatibility_and_version = (
+        ce.get_compiler_abi_compatibility_and_version
+    )
+    ce.get_compiler_abi_compatibility_and_version = (
+        fixed_get_compiler_abi_compatibility_and_version
+    )
 
 
-setup(
-    name="amd_gsplat",
-    version=__version__,
-    description=" Python package for differentiable rasterization of gaussians",
-    keywords="gaussian, splatting, cuda",
-    url=URL,
-	author="AMD Corporation",
-    license="Apache 2.0",
-    python_requires=">=3.7",
-    install_requires=[
-        "ninja",
-        "numpy",
-        "jaxtyping",
-        "rich>=12",
-        "torch",
-        "typing_extensions; python_version<'3.8'",
-    ],
-    extras_require={
-        # dev dependencies. Install them by `pip install gsplat[dev]`
-        "dev": [
-            "black[jupyter]==22.3.0",
-            "isort==5.10.1",
-            "pylint==2.13.4",
-            "pytest==7.1.2",
-            "pytest-xdist==2.5.0",
-            "typeguard>=2.13.3",
-            "pyyaml==6.0",
-            "build",
-            "twine",
-        ],
-    },
-    ext_modules=get_extensions(),
-    cmdclass={"build_ext": get_ext()},
-    packages=find_packages(),
-    # https://github.com/pypa/setuptools/issues/1461#issuecomment-954725244
-    include_package_data=True,
-)
+def _setup():
+    from setuptools import find_packages, setup
+
+    packages = find_packages(exclude=["tests", "tests.*"])
+
+    setup(
+        name="amd_gsplat",
+        version=__version__,
+        description=" Python package for differentiable rasterization of gaussians",
+        keywords="gaussian, splatting, cuda",
+        url=URL,
+        author="AMD Corporation",
+        license="Apache 2.0",
+        download_url=f"{URL}/archive/gsplat-{__version__}.tar.gz",
+        python_requires=">=3.7",
+        install_requires=INSTALL_REQUIRES,
+        extras_require=get_extras_require(),
+        ext_modules=get_extensions() if not BUILD_NO_CUDA else [],
+        cmdclass={"build_ext": get_ext()} if not BUILD_NO_CUDA else {},
+        packages=packages,
+        package_data={
+            "gsplat.geometry": [
+                "kernels/cuda/*.cpp",
+                "kernels/cuda/csrc/*",
+            ],
+            "gsplat.sensors": [
+                "kernels/cuda/*.cpp",
+                "kernels/cuda/csrc/*",
+            ],
+            "gsplat.scene": [
+                "kernels/cuda/*.cpp",
+                "kernels/cuda/csrc/*",
+            ],
+            "gsplat.experimental": [
+                "render/kernels/cuda/*.cpp",
+                "render/kernels/cuda/csrc/*",
+                "render/kernels/cuda/csrc/gaussian_inference/*",
+            ],
+        },
+        include_package_data=True,
+    )
+
+
+if __name__ == "__main__":
+    _setup()
 
 if need_to_unset_max_jobs:
     print("Unsetting MAX_JOBS")
     os.environ.pop("MAX_JOBS")
-

@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2024 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 import os
 import time
@@ -11,6 +26,7 @@ from PIL import Image
 from torch import Tensor, optim
 
 from gsplat import rasterization, rasterization_2dgs
+from gsplat.losses import mse_loss
 
 
 class SimpleTrainer:
@@ -84,7 +100,6 @@ class SimpleTrainer:
         optimizer = optim.Adam(
             [self.rgbs, self.means, self.scales, self.opacities, self.quats], lr
         )
-        mse_loss = torch.nn.MSELoss()
         frames = []
         times = [0] * 2  # rasterization, backward
         K = torch.tensor(
@@ -119,7 +134,7 @@ class SimpleTrainer:
             out_img = renders[0]
             torch.cuda.synchronize()
             times[0] += time.time() - start
-            loss = mse_loss(out_img, self.gt_image)
+            loss = mse_loss(out_img, self.gt_image).mean()
             optimizer.zero_grad()
             start = time.time()
             loss.backward()

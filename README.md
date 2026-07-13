@@ -1,90 +1,141 @@
 # gsplat for ROCm
 
-gsplat is an open-source library for GPU  accelerated rasterization of gaussians with python bindings. It is inspired by the SIGGRAPH paper [3D Gaussian Splatting for Real-Time Rendering of Radiance Fields](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/).
+gsplat is an open-source library for GPU-accelerated rasterization of gaussians with python bindings. It is inspired by the SIGGRAPH paper [3D Gaussian Splatting for Real-Time Rendering of Radiance Fields](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/).
 
-This repo is the HIP port of the gsplat repo which is enabled and optimised for RCOM runing on AMD Instinct processors. 
+This repo is the HIP port of the gsplat library, enabled and optimized for ROCm on AMD Instinct processors. It tracks upstream [nerfstudio-project/gsplat](https://github.com/nerfstudio-project/gsplat) (currently v1.5.3) while preserving AMD-specific defaults and build paths.
 
 ## System Requirements
-GSPLAT  for AMD ROCm™ 1.0.0 depends directly on NumPy and PyTorch for AMD ROCm™ with many optional dependencies
 
-- OS : Ubuntu 22.04 and above
-- ROCM Versions 6.4.1 and above
-- GPU Platforms : MI300X
-- Pytorch: 2.6 and above
-- Python : 3.12 and above.
-  
+- OS: Ubuntu 22.04 and above
+- ROCm: 6.4.1 and above
+- GPU platforms: MI300X
+- PyTorch: 2.6 and above
+- Python: 3.12 and above
+
+## News
+
+### Unreleased
+
+Changes on `main` since the [v1.5.3](https://github.com/nerfstudio-project/gsplat/releases/tag/v1.5.3) tag (not yet on PyPI).
+
+- [Jun 2026] **G-SHARP** -- dynamic surgical-scene reconstruction for Gaussian splatting.
+- [Jun 2026] **New camera & sensor support** in the sensors library: pinhole, FTheta, fisheye, and LiDAR models.
+- [Jun 2026] **Faster rasterization** -- performance improvements across the 3DGS and 3DGUT rasterization paths.
+- [Jun 2026] **Gaussian ID rasterization** -- rasterize Gaussian IDs, counts, and top contributors per pixel.
+- [Jun 2026] **Various performance and code improvements**: spherical-harmonics improvements, profiling/tracing tools, robustness fixes, stronger test coverage, CUDA 13 and NumPy 2 support, simplified package layout.
+- [May 2026] **Inference Rendering (HiGS)** -- experimental inference-only rendering under `gsplat.experimental`.
+- [May 2026] Native **MCMC perturb** (`inject_noise`) for MCMC-style Gaussian optimization.
+- [Apr 2026] **AccuTile** conservative ellipse-based tile–Gaussian intersection test.
+- [Apr 2026] **NCore v4** capture support.
+- [Mar 2026] **LiDAR** rasterization for 3D Gaussian splatting.
+- [Mar 2026] **TorchScript-oriented** deployment for camera models and distortions.
+- [Mar 2026] **3DGUT** extensions: external distortion, per-ray inputs, ray-normal outputs.
+- [Jan 2026] [PPISP](https://research.nvidia.com/labs/sil/projects/ppisp/) integrated as an alternative to bilateral grid.
+
 ## Installation
 
- - Install [Pytorch](https://pytorch.org/get-started/locally/) first. The easiet way is the use the official docker image which has pytorch for ROCm.
+Install [PyTorch for ROCm](https://pytorch.org/get-started/locally/) first. The easiest way is the official ROCm docker image:
 
-   Rocm 6.4
-    ```bash
-    docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true   --shm-size=128GB --network=host --device=/dev/kfd  --device=/dev/dri --group-add video -it   -v $HOME:$HOME --name rocm/pytorch:rocm6.4.3_ubuntu24.04_py3.12_pytorch_release_2.6.0 
-    ```
+ROCm 6.4:
 
-   Rocm 7.0
-   ```bash
-   docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true   --shm-size=128GB --network=host --device=/dev/kfd  --device=/dev/dri --group-add video -it   -v $HOME:$HOME --name rocm/pytorch:rocm7.0_ubuntu24.04_py3.12_pytorch_release_2.8.0
-   ```
- 
-- Install the gsplat from the AMD hosted PYPI repoitory.
+```bash
+docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true --shm-size=128GB --network=host --device=/dev/kfd --device=/dev/dri --group-add video -it -v $HOME:$HOME --name rocm/pytorch:rocm6.4.3_ubuntu24.04_py3.12_pytorch_release_2.6.0
+```
 
-    ```bash
-    pip install gsplat --extra-index-url=https://pypi.amd.com/simple
-    ```
-- Once the installation is sucessful, you can verify the installation using the pip show command
-  ```bash
-    pip show gsplat
-  ```
+ROCm 7.0:
+
+```bash
+docker run --cap-add=SYS_PTRACE --ipc=host --privileged=true --shm-size=128GB --network=host --device=/dev/kfd --device=/dev/dri --group-add video -it -v $HOME:$HOME --name rocm/pytorch:rocm7.0_ubuntu24.04_py3.12_pytorch_release_2.8.0
+```
+
+Install gsplat from the AMD-hosted PyPI repository:
+
+```bash
+pip install gsplat --extra-index-url=https://pypi.amd.com/simple
+```
+
+Verify installation:
+
+```bash
+pip show gsplat
+```
 
 ## Examples
 
-We provide a set of examples to get you started! Below you can find the details about the examples 
+Get the examples folder from the GitHub repo:
 
-- Get the examples folder from the github repo
-  ```bash
-  git clone --no-checkout https://github.com/rocm/gsplat.git && cd gsplat && git sparse-checkout init --cone
-  git sparse-checkout add examples && git checkout main
-  ```
-- Install the dependencies and download the test data set
-   ```bash 
-   cd examples
-   ./install_dependencies.sh
-   python datasets/download_dataset.py
-  ```
-- To run the examples refer to the docs below.
-  - [Fit a Single Image](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1128163102/Fit+a+single+image)
-  
-  - [Fit a 2D image with 3D Gaussians.](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1128134447/Fit+a+COLMAP+Capture)
-  
-  - [Render a large scene in real-time.](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1128302047/Render+a+Large+Scene)
+```bash
+git clone --no-checkout https://github.com/rocm/gsplat.git && cd gsplat && git sparse-checkout init --cone
+git sparse-checkout add examples && git checkout main
+```
+
+Install dependencies and download the test dataset:
+
+```bash
+cd examples
+./install_dependencies.sh
+python datasets/download_dataset.py
+```
+
+AMD-specific walkthroughs:
+
+- [Fit a Single Image](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1128163102/Fit+a+single+image)
+- [Fit a COLMAP Capture](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1128134447/Fit+a+COLMAP+Capture)
+- [Render a Large Scene](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1128302047/Render+a+Large+Scene)
+
+Upstream examples (require `pip install -r examples/requirements.txt --no-build-isolation`):
+
+- [Train a 3D Gaussian splatting model on a COLMAP capture.](https://docs.gsplat.studio/main/examples/colmap.html)
+- [Fit a 2D image with 3D Gaussians.](https://docs.gsplat.studio/main/examples/image.html)
+- [Render a large scene in real-time.](https://docs.gsplat.studio/main/examples/large_scale.html)
+- [Train on an NCore v4 capture.](https://docs.gsplat.studio/main/examples/ncore.html)
 
 ## Evaluation
 
-This repo comes with a standalone script that reproduces the official Gaussian Splatting with exactly the same performance on PSNR, SSIM, LPIPS, and converged number of Gaussians. Powered by gsplat’s efficient GPU implementation, the training takes up to **4x less GPU memory** with up to **15% less time** to finish than the official implementation. Full report can be found [here](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1115965044/Evaluation+Results+on+MI300).
+This repo comes with a standalone script that reproduces the official Gaussian Splatting with the same performance on PSNR, SSIM, LPIPS, and converged number of Gaussians. Powered by gsplat's efficient GPU implementation, training takes up to **4x less GPU memory** with up to **15% less time** than the official implementation. Full AMD report: [Evaluation Results on MI300](https://amd.atlassian.net/wiki/spaces/DCGPUAIST/pages/1115965044/Evaluation+Results+on+MI300). Upstream CUDA report: [evaluation results](https://docs.gsplat.studio/main/tests/eval.html).
 
-## Building from source
-Please checkout our [dev-setup](docs/DevSetup.md) documentation for instructions on how to build the gsplat library from source.
+```bash
+python -m pip install -e .
+cd examples
+python -m pip install -r requirements.txt
+python datasets/download_dataset.py
+bash benchmarks/basic.sh
+```
+
+## Inference Rendering
+
+gsplat includes an experimental inference-only rendering path based on HiGS (Hierarchically Tiled Gaussian Splatting) in `gsplat.experimental`, designed for low-latency rendering of pre-trained Gaussian scenes. See the [HiGS project page](https://research.nvidia.com/labs/sil/projects/higs/) and `examples/benchmarks/gaussian_render_inference_scene/`.
+
+```python
+from gsplat.experimental import render_scene, GaussianInferenceScene
+```
+
+## Building from Source
+
+For ROCm/HIP builds, see [docs/DevSetup.md](docs/DevSetup.md).
+
+For general development workflow (formatting, tests, docs), see [docs/DEV.md](docs/DEV.md).
 
 ## Contributing
-We welcome contributions of any kind and are open to feedback, bug-reports, and improvements to help expand the capabilities of this software. Please check [Contributing.md](docs/Contributing.md) for more info.
 
+We welcome contributions of any kind. See [Contributing.md](docs/Contributing.md) for details.
 
-## Core Development
+## Development and Contribution
 
-This project is developed by the following wonderful contributors (unordered):
+This project is developed by contributors from the following institutes (unordered):
 
-- [Angjoo Kanazawa](https://people.eecs.berkeley.edu/~kanazawa/) (UC Berkeley): Mentor of the project.
-- [Matthew Tancik](https://www.matthewtancik.com/about-me) (Luma AI): Mentor of the project.
-- [Vickie Ye](https://people.eecs.berkeley.edu/~vye/) (UC Berkeley): Project lead. v0.1 lead.
-- [Matias Turkulainen](https://maturk.github.io/) (Aalto University): Core developer.
-- [Ruilong Li](https://www.liruilong.cn/) (UC Berkeley): Core developer. v1.0 lead.
-- [Justin Kerr](https://kerrj.github.io/) (UC Berkeley): Core developer.
-- [Brent Yi](https://github.com/brentyi) (UC Berkeley): Core developer.
-- [Zhuoyang Pan](https://panzhy.com/) (ShanghaiTech University): Core developer.
-- [Jianbo Ye](http://www.jianboye.org/) (Amazon): Core developer.
+- UC Berkeley
+- NVIDIA
+- ShanghaiTech University
+- Amazon
+- Meta
+- IIIT
+- LumaAI
+- SpectacularAI
+- Aalto University
+- CMU
 
-We also have a white paper with about the project with benchmarking and mathematical supplement with conventions and derivations, available [here](https://arxiv.org/abs/2409.06765). If you find this library useful in your projects or papers, please consider citing:
+We also have a white paper about the project with benchmarking and mathematical supplement, available [on arXiv](https://arxiv.org/abs/2409.06765). If you find this library useful in your projects or papers, please consider citing:
 
 ```
 @article{ye2025gsplat,

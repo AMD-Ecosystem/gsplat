@@ -1,3 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2024 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Tests for the functions in the CUDA extension.
 
 Usage:
@@ -8,6 +24,7 @@ pytest <THIS_PY_FILE> -s
 
 import pytest
 import torch
+import gsplat
 
 
 
@@ -52,7 +69,25 @@ def profile_test_with_torch(request):
 device = torch.device("cuda:0")
 
 
+def test_mcmc_strategy_positional_constructor():
+    from gsplat.strategy import MCMCStrategy
+
+    strategy = MCMCStrategy(123, 4.5, 6, 7, 8, 9, 0.1, True, 0.2, 30.0)
+
+    assert strategy.cap_max == 123
+    assert strategy.noise_lr == 4.5
+    assert strategy.refine_start_iter == 6
+    assert strategy.refine_stop_iter == 7
+    assert strategy.noise_injection_stop_iter == 8
+    assert strategy.refine_every == 9
+    assert strategy.min_opacity == 0.1
+    assert strategy.verbose is True
+    assert strategy.noise_opacity_t == 0.2
+    assert strategy.noise_opacity_k == 30.0
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+@pytest.mark.skipif(not gsplat.has_3dgs(), reason="3DGS support isn't built in")
 def test_strategy():
     from gsplat.rendering import rasterization
     from gsplat.strategy import DefaultStrategy, MCMCStrategy
@@ -103,6 +138,7 @@ def test_strategy():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="No CUDA device")
+@pytest.mark.skipif(not gsplat.has_3dgs(), reason="3DGS support isn't built in")
 def test_strategy_requires_grad():
     from gsplat.rendering import rasterization
     from gsplat.strategy import DefaultStrategy, MCMCStrategy

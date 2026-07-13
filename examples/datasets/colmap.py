@@ -1,16 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2024-2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import cv2
 import imageio.v2 as imageio
 import numpy as np
+import pycolmap
 import torch
 from PIL import Image
-from pycolmap import SceneManager
 from tqdm import tqdm
 from typing_extensions import assert_never
 
+from exif import compute_exposure_from_exif
 from .normalize import (
     align_principal_axes,
     similarity_from_cameras,
@@ -53,6 +71,52 @@ def _resize_image_folder(image_dir: str, resized_dir: str, factor: int) -> str:
     return resized_dir
 
 
+def _as_dict(map_like: Any) -> Dict[int, Any]:
+    """Convert a pycolmap map view into a regular Python dictionary."""
+    return {int(k): v for k, v in map_like.items()}
+
+
+def _camera_model_name(camera: Any) -> str:
+    model_name = getattr(camera, "model_name", "")
+    if model_name:
+        return str(model_name).replace("CameraModelId.", "")
+
+    model = getattr(camera, "model", "")
+    return getattr(model, "name", str(model)).replace("CameraModelId.", "")
+
+
+def _camera_distortion(camera: Any) -> tuple[np.ndarray, str]:
+    model_name = _camera_model_name(camera)
+    params = np.asarray(camera.params, dtype=np.float64)
+
+    if model_name in {"SIMPLE_PINHOLE", "PINHOLE"}:
+        return np.empty(0, dtype=np.float32), "perspective"
+    if model_name == "SIMPLE_RADIAL":
+        distortion = np.array([params[3], 0.0, 0.0, 0.0], dtype=np.float32)
+        return distortion, "perspective"
+    if model_name == "RADIAL":
+        distortion = np.array([params[3], params[4], 0.0, 0.0], dtype=np.float32)
+        return distortion, "perspective"
+    if model_name == "OPENCV":
+        return np.array(params[4:8], dtype=np.float32), "perspective"
+    if model_name == "OPENCV_FISHEYE":
+        return np.array(params[4:8], dtype=np.float32), "fisheye"
+
+    raise ValueError(
+        f"Only perspective and fisheye cameras are supported, got {model_name}"
+    )
+
+
+def _image_w2c(image: Any) -> np.ndarray:
+    cam_from_world = image.cam_from_world
+    if callable(cam_from_world):
+        cam_from_world = cam_from_world()
+
+    w2c = np.eye(4)
+    w2c[:3, :4] = np.asarray(cam_from_world.matrix(), dtype=np.float64)
+    return w2c
+
+
 class Parser:
     """COLMAP parser."""
 
@@ -62,11 +126,13 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
+        load_exposure: bool = False,
     ):
         self.data_dir = data_dir
         self.factor = factor
         self.normalize = normalize
         self.test_every = test_every
+        self.load_exposure = load_exposure
 
         colmap_dir = os.path.join(data_dir, "sparse/0/")
         if not os.path.exists(colmap_dir):
@@ -75,63 +141,38 @@ class Parser:
             colmap_dir
         ), f"COLMAP directory {colmap_dir} does not exist."
 
-        manager = SceneManager(colmap_dir)
-        manager.load_cameras()
-        manager.load_images()
-        manager.load_points3D()
+        reconstruction = pycolmap.Reconstruction(colmap_dir)
 
         # Extract extrinsic matrices in world-to-camera format.
-        imdata = manager.images
+        cameras = _as_dict(reconstruction.cameras)
+        images = _as_dict(reconstruction.images)
+        image_ids = [int(image_id) for image_id in reconstruction.reg_image_ids()]
+        imdata = {image_id: images[image_id] for image_id in image_ids}
         w2c_mats = []
         camera_ids = []
         Ks_dict = dict()
         params_dict = dict()
+        camtype_dict = dict()
         imsize_dict = dict()  # width, height
         mask_dict = dict()
-        bottom = np.array([0, 0, 0, 1]).reshape(1, 4)
-        for k in imdata:
-            im = imdata[k]
-            rot = im.R()
-            trans = im.tvec.reshape(3, 1)
-            w2c = np.concatenate([np.concatenate([rot, trans], 1), bottom], axis=0)
-            w2c_mats.append(w2c)
+        for image_id in imdata:
+            im = imdata[image_id]
+            w2c_mats.append(_image_w2c(im))
 
             # support different camera intrinsics
-            camera_id = im.camera_id
+            camera_id = int(im.camera_id)
             camera_ids.append(camera_id)
 
             # camera intrinsics
-            cam = manager.cameras[camera_id]
-            fx, fy, cx, cy = cam.fx, cam.fy, cam.cx, cam.cy
-            K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+            cam = cameras[camera_id]
+            K = np.asarray(cam.calibration_matrix(), dtype=np.float64)
             K[:2, :] /= factor
             Ks_dict[camera_id] = K
 
             # Get distortion parameters.
-            type_ = cam.camera_type
-            if type_ == 0 or type_ == "SIMPLE_PINHOLE":
-                params = np.empty(0, dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 1 or type_ == "PINHOLE":
-                params = np.empty(0, dtype=np.float32)
-                camtype = "perspective"
-            if type_ == 2 or type_ == "SIMPLE_RADIAL":
-                params = np.array([cam.k1, 0.0, 0.0, 0.0], dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 3 or type_ == "RADIAL":
-                params = np.array([cam.k1, cam.k2, 0.0, 0.0], dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 4 or type_ == "OPENCV":
-                params = np.array([cam.k1, cam.k2, cam.p1, cam.p2], dtype=np.float32)
-                camtype = "perspective"
-            elif type_ == 5 or type_ == "OPENCV_FISHEYE":
-                params = np.array([cam.k1, cam.k2, cam.k3, cam.k4], dtype=np.float32)
-                camtype = "fisheye"
-            assert (
-                camtype == "perspective" or camtype == "fisheye"
-            ), f"Only perspective and fisheye cameras are supported, got {type_}"
-
+            params, camtype = _camera_distortion(cam)
             params_dict[camera_id] = params
+            camtype_dict[camera_id] = camtype
             imsize_dict[camera_id] = (cam.width // factor, cam.height // factor)
             mask_dict[camera_id] = None
         print(
@@ -140,7 +181,7 @@ class Parser:
 
         if len(imdata) == 0:
             raise ValueError("No images found in COLMAP.")
-        if not (type_ == 0 or type_ == 1):
+        if any(len(params) > 0 for params in params_dict.values()):
             print("Warning: COLMAP Camera is not PINHOLE. Images have distortion.")
 
         w2c_mats = np.stack(w2c_mats, axis=0)
@@ -199,16 +240,33 @@ class Parser:
         image_paths = [os.path.join(image_dir, colmap_to_image[f]) for f in image_names]
 
         # 3D points and {image_name -> [point_idx]}
-        points = manager.points3D.astype(np.float32)
-        points_err = manager.point3D_errors.astype(np.float32)
-        points_rgb = manager.point3D_colors.astype(np.uint8)
+        points3D = _as_dict(reconstruction.points3D)
+        point3D_ids = sorted(points3D)
+        points = np.array(
+            [points3D[point3D_id].xyz for point3D_id in point3D_ids],
+            dtype=np.float32,
+        ).reshape(-1, 3)
+        points_err = np.array(
+            [points3D[point3D_id].error for point3D_id in point3D_ids],
+            dtype=np.float32,
+        )
+        points_rgb = np.array(
+            [points3D[point3D_id].color for point3D_id in point3D_ids],
+            dtype=np.uint8,
+        ).reshape(-1, 3)
+        point3D_id_to_idx = {
+            point3D_id: idx for idx, point3D_id in enumerate(point3D_ids)
+        }
         point_indices = dict()
 
-        image_id_to_name = {v: k for k, v in manager.name_to_image_id.items()}
-        for point_id, data in manager.point3D_id_to_images.items():
-            for image_id, _ in data:
+        image_id_to_name = {image_id: image.name for image_id, image in imdata.items()}
+        for point3D_id in point3D_ids:
+            for track_element in points3D[point3D_id].track.elements:
+                image_id = int(track_element.image_id)
+                if image_id not in image_id_to_name:
+                    continue
                 image_name = image_id_to_name[image_id]
-                point_idx = manager.point3D_id_to_point3D_idx[point_id]
+                point_idx = point3D_id_to_idx[point3D_id]
                 point_indices.setdefault(image_name, []).append(point_idx)
         point_indices = {
             k: np.array(v).astype(np.int32) for k, v in point_indices.items()
@@ -259,6 +317,39 @@ class Parser:
         self.point_indices = point_indices  # Dict[str, np.ndarray], image_name -> [M,]
         self.transform = transform  # np.ndarray, (4, 4)
 
+        # Create 0-based contiguous camera indices from COLMAP camera_ids.
+        # This is useful for camera-based embeddings/modules.
+        unique_camera_ids = sorted(set(camera_ids))
+        self.camera_id_to_idx = {cid: idx for idx, cid in enumerate(unique_camera_ids)}
+        self.camera_indices = [self.camera_id_to_idx[cid] for cid in camera_ids]
+        self.num_cameras = len(unique_camera_ids)
+
+        # Load EXIF exposure data if requested.
+        # Always read from original (non-downscaled) images since PNG doesn't support EXIF.
+        if load_exposure:
+            exposure_values: List[Optional[float]] = []
+            for image_name in tqdm(image_names, desc="Loading EXIF exposure"):
+                original_path = Path(colmap_image_dir) / image_name
+                exposure_values.append(compute_exposure_from_exif(original_path))
+
+            # Compute mean across all valid exposures and subtract
+            valid_exposures = [e for e in exposure_values if e is not None]
+            if valid_exposures:
+                exposure_mean = sum(valid_exposures) / len(valid_exposures)
+                self.exposure_values: List[Optional[float]] = [
+                    (e - exposure_mean) if e is not None else None
+                    for e in exposure_values
+                ]
+                print(
+                    f"[Parser] Loaded exposure for {len(valid_exposures)}/{len(exposure_values)} images "
+                    f"(mean={exposure_mean:.3f} EV)"
+                )
+            else:
+                self.exposure_values = [None] * len(exposure_values)
+                print("[Parser] No valid EXIF exposure data found in any image.")
+        else:
+            self.exposure_values = [None] * len(image_paths)
+
         # load one image to check the size. In the case of tanksandtemples dataset, the
         # intrinsics stored in COLMAP corresponds to 2x upsampled images.
         actual_image = imageio.imread(self.image_paths[0])[..., :3]
@@ -280,6 +371,7 @@ class Parser:
             params = self.params_dict[camera_id]
             if len(params) == 0:
                 continue  # no distortion
+            camtype = camtype_dict[camera_id]
             assert camera_id in self.Ks_dict, f"Missing K for camera {camera_id}"
             assert (
                 camera_id in self.params_dict
@@ -404,9 +496,17 @@ class Dataset:
             "camtoworld": torch.from_numpy(camtoworlds).float(),
             "image": torch.from_numpy(image).float(),
             "image_id": item,  # the index of the image in the dataset
+            "camera_idx": self.parser.camera_indices[
+                index
+            ],  # 0-based contiguous camera index
         }
         if mask is not None:
             data["mask"] = torch.from_numpy(mask).bool()
+
+        # Add exposure if available for this image
+        exposure = self.parser.exposure_values[index]
+        if exposure is not None:
+            data["exposure"] = torch.tensor(exposure, dtype=torch.float32)
 
         if self.load_depths:
             # projected points to image plane to get depths

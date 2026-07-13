@@ -1,3 +1,8 @@
+#!/bin/sh
+
+SDIR=$(cd -- "$(dirname "$0")" && pwd -P)
+
+EXAMPLES_DIR=$SDIR/..
 SCENE_DIR="data/360_v2"
 RESULT_DIR="results/benchmark_4gpus"
 SCENE_LIST="garden bicycle stump bonsai counter kitchen room" # treehill flowers
@@ -15,8 +20,8 @@ do
     # train and eval at the last step (30000)
     # 4 GPUs is effectively 4x batch size so we scale down the steps by 4x as well.
     # "--packed" reduces the data transfer between GPUs, which leads to faster training. 
-    # removing --packed option temporarily as it leads to memory issues (from upstream)
-    CUDA_VISIBLE_DEVICES=0,1,2,3 python simple_trainer.py default --eval_steps 30000 --disable_viewer --data_factor $DATA_FACTOR \
+    # Omit --packed on AMD: it can cause memory issues in multi-GPU runs.
+    CUDA_VISIBLE_DEVICES=0,1,2,3 python $EXAMPLES_DIR/simple_trainer.py default --eval_steps 30000 --disable_viewer --data_factor $DATA_FACTOR \
         --steps_scaler 0.25 \
         --data_dir data/360_v2/$SCENE/ \
         --result_dir $RESULT_DIR/$SCENE/

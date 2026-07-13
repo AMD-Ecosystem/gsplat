@@ -1,11 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2024-2025 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Tuple, Union
 
 import torch
 from typing_extensions import Literal
 
 from .base import Strategy
 from .ops import duplicate, remove, reset_opa, split
+
+if TYPE_CHECKING:
+    from gsplat.scene import Scene
 
 
 @dataclass
@@ -157,6 +177,7 @@ class DefaultStrategy(Strategy):
         step: int,
         info: Dict[str, Any],
         packed: bool = False,
+        scene: Scene | None = None,
     ):
         """Callback function to be executed after the `loss.backward()` call."""
         if step >= self.refine_stop_iter:
@@ -170,7 +191,9 @@ class DefaultStrategy(Strategy):
             and step % self.reset_every >= self.pause_refine_after_reset
         ):
             # grow GSs
-            n_dupli, n_split = self._grow_gs(params, optimizers, state, step)
+            n_dupli, n_split = self._grow_gs(
+                params, optimizers, state, step, scene=scene
+            )
             if self.verbose:
                 print(
                     f"Step {step}: {n_dupli} GSs duplicated, {n_split} GSs split. "
@@ -178,7 +201,7 @@ class DefaultStrategy(Strategy):
                 )
 
             # prune GSs
-            n_prune = self._prune_gs(params, optimizers, state, step)
+            n_prune = self._prune_gs(params, optimizers, state, step, scene=scene)
             if self.verbose:
                 print(
                     f"Step {step}: {n_prune} GSs pruned. "
@@ -192,7 +215,7 @@ class DefaultStrategy(Strategy):
                 state["radii"].zero_()
             torch.cuda.empty_cache()
 
-        if step % self.reset_every == 0 & step > 0:
+        if step % self.reset_every == 0 and step > 0:
             reset_opa(
                 params=params,
                 optimizers=optimizers,
@@ -266,6 +289,7 @@ class DefaultStrategy(Strategy):
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
         step: int,
+        scene: Scene | None = None,
     ) -> Tuple[int, int]:
         count = state["count"]
         grads = state["grad2d"] / count.clamp_min(1)
@@ -287,7 +311,13 @@ class DefaultStrategy(Strategy):
 
         # first duplicate
         if n_dupli > 0:
-            duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli)
+            duplicate(
+                params=params,
+                optimizers=optimizers,
+                state=state,
+                mask=is_dupli,
+                scene=scene,
+            )
 
         # new GSs added by duplication will not be split
         is_split = torch.cat(
@@ -305,6 +335,7 @@ class DefaultStrategy(Strategy):
                 state=state,
                 mask=is_split,
                 revised_opacity=self.revised_opacity,
+                scene=scene,
             )
         return n_dupli, n_split
 
@@ -315,6 +346,7 @@ class DefaultStrategy(Strategy):
         optimizers: Dict[str, torch.optim.Optimizer],
         state: Dict[str, Any],
         step: int,
+        scene: Scene | None = None,
     ) -> int:
         is_prune = torch.sigmoid(params["opacities"].flatten()) < self.prune_opa
         if step > self.reset_every:
@@ -334,6 +366,12 @@ class DefaultStrategy(Strategy):
 
         n_prune = is_prune.sum().item()
         if n_prune > 0:
-            remove(params=params, optimizers=optimizers, state=state, mask=is_prune)
+            remove(
+                params=params,
+                optimizers=optimizers,
+                state=state,
+                mask=is_prune,
+                scene=scene,
+            )
 
         return n_prune
