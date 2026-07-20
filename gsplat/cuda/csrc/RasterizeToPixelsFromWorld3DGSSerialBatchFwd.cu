@@ -64,7 +64,7 @@ template<
     bool SAFE_MASKED_OUTPUTS = true
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_serial_batch_fwd_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_serial_batch_fwd_kernel(
         const uint32_t C,
         const uint32_t N,
         const uint32_t n_isects,

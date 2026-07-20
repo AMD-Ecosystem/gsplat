@@ -22,9 +22,14 @@
 
 #    include <ATen/Dispatch.h>
 #    include <ATen/core/Tensor.h>
-#    include <ATen/cuda/Atomic.cuh>
-#    include <c10/cuda/CUDAStream.h>
-#    include <cooperative_groups.h>
+#    include "ATenAtomic.cuh"
+#    if USE_ROCM
+#        include <c10/hip/HIPStream.h>
+#        include <hip/hip_cooperative_groups.h>
+#    else
+#        include <c10/cuda/CUDAStream.h>
+#        include <cooperative_groups.h>
+#    endif
 #    include <cuda/std/optional>
 
 #    include "Common.h"
@@ -66,7 +71,7 @@ __global__ void
         // uncented transform
         const UnscentedTransformParameters ut_params,
         // sensor model parameters
-        const __grid_constant__ typename SensorModel::KernelParameters sensor_model_params,
+        const GSPLAT_GRID_CONSTANT typename SensorModel::KernelParameters sensor_model_params,
         // outputs
         int32_t *__restrict__ radii,         // [B, C, N, 2]
         scalar_t *__restrict__ means2d,      // [B, C, N, 2]

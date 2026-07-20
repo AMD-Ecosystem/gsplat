@@ -23,9 +23,12 @@
 #    include <ATen/Dispatch.h>
 #    include <ATen/Functions.h>
 #    include <ATen/core/Tensor.h>
-#    include <ATen/cuda/Atomic.cuh>
-#    include <ATen/cuda/cub.h>
-#    include <c10/cuda/CUDAStream.h>
+#    include "ATenAtomic.cuh"
+#    ifdef USE_ROCM
+#        include <ATen/hip/cub.h>
+#    else
+#        include <ATen/cuda/cub.h>
+#    endif
 #    include <cooperative_groups.h>
 #    include <cstdint>
 #    include <cuda/std/optional>
@@ -230,6 +233,10 @@ at::Tensor compute_bid_to_slot(
     // Sort by `(batch_round, tile)` while carrying the original tile-major
     // slot as the value. The sorted values are the launch-index to slot
     // permutation; no extra scatter is needed.
+#    ifdef USE_ROCM
+#        pragma push_macro("cub")
+#        undef cub
+#    endif
     at::cuda::cub::radix_sort_pairs<int64_t, int32_t>(
         sort_keys.const_data_ptr<int64_t>(),
         sorted_keys.data_ptr<int64_t>(),
@@ -240,6 +247,9 @@ at::Tensor compute_bid_to_slot(
         /*begin_bit=*/0,
         /*end_bit=*/static_cast<int64_t>(total_bits == 0 ? 1u : total_bits)
     );
+#    ifdef USE_ROCM
+#        pragma pop_macro("cub")
+#    endif
 
     return bid_to_slot;
 }

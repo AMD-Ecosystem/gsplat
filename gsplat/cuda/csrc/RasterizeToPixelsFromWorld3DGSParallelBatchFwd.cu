@@ -287,7 +287,7 @@ template<
     typename scalar_t
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_fwd_partials_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_fwd_partials_kernel(
         const uint32_t B,
         const uint32_t C,
         const uint32_t N,
@@ -718,7 +718,7 @@ template<
     typename scalar_t
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_fwd_batch_scan_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_fwd_batch_scan_kernel(
         const uint32_t B,
         const uint32_t C,
         const uint32_t N,
@@ -1149,7 +1149,7 @@ template<
     typename scalar_t
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_fwd_batch_replay_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_fwd_batch_replay_kernel(
         const uint32_t B,
         const uint32_t C,
         const uint32_t N,

@@ -22,7 +22,7 @@
 
 #    include <ATen/Dispatch.h>
 #    include <ATen/core/Tensor.h>
-#    include <ATen/cuda/Atomic.cuh>
+#    include "ATenAtomic.cuh"
 #    include <c10/cuda/CUDAStream.h>
 #    include <cooperative_groups.h>
 

@@ -426,6 +426,99 @@ def _merge_include_dirs(*dir_lists):
     return merged
 
 
+def _sync_hip_glm_tree(repo_root):
+    """Copy full GLM submodule into hipify tree (hipify omits .inl files)."""
+    import shutil
+
+    src = osp.join(repo_root, "gsplat", "cuda", "csrc", "third_party", "glm")
+    dst = osp.join(repo_root, "gsplat", "hip", "csrc", "third_party", "glm")
+    if not osp.isdir(src):
+        return
+    dst_parent = osp.dirname(dst)
+    os.makedirs(dst_parent, exist_ok=True)
+    if osp.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, symlinks=True)
+
+
+def _fix_hipified_glm_includes(repo_root):
+    """Rewrite hipify's broken relative GLM includes to standard <glm/...> paths."""
+    import re
+
+    hip_root = osp.join(repo_root, "gsplat", "hip")
+    if not osp.isdir(hip_root):
+        return
+    rel_glm = re.compile(
+        r'#include\s+<(?:\.\./)+hip/csrc/third_party/glm/glm/([^>]+)>'
+    )
+
+    for root, _, files in os.walk(hip_root):
+        for name in files:
+            if not name.endswith((".h", ".cuh", ".cpp", ".hip", ".hpp")):
+                continue
+            path = osp.join(root, name)
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            updated = rel_glm.sub(r"#include <glm/\1>", text)
+            if updated != text:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(updated)
+
+
+def _fix_hip_include_paths(repo_root):
+    """Rewrite hipify's ../../hip/include/... includes to use -I gsplat/cuda/include."""
+    import re
+
+    pat = re.compile(r'#include\s+"((?:\.\./)+)hip/include/([^"]+)"')
+    hip_csrc_pat = re.compile(r'#include\s+"((?:\.\./)+)hip/csrc/([^"]+)"')
+    for tree in (
+        osp.join(repo_root, "gsplat", "hip"),
+        osp.join(repo_root, "gsplat", "cuda", "include"),
+    ):
+        if not osp.isdir(tree):
+            continue
+        for root, _, files in os.walk(tree):
+            for name in files:
+                if not name.endswith((".hip", ".h", ".cpp", ".cuh", ".hpp")):
+                    continue
+                path = osp.join(root, name)
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+                updated = pat.sub(r'#include "\2"', text)
+                updated = hip_csrc_pat.sub(r'#include "\2"', updated)
+                if updated != text:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(updated)
+
+
+def _remove_hip_csrc_duplicate_cuhs(repo_root):
+    """Drop hipify copies of cuda/csrc headers that shadow the canonical tree."""
+    import shutil
+
+    cuda_csrc = osp.join(repo_root, "gsplat", "cuda", "csrc")
+    hip_csrc = osp.join(repo_root, "gsplat", "hip", "csrc")
+    if not osp.isdir(cuda_csrc) or not osp.isdir(hip_csrc):
+        return
+    for name in os.listdir(cuda_csrc):
+        if not name.endswith(".cuh"):
+            continue
+        hip_copy = osp.join(hip_csrc, name)
+        if osp.isfile(hip_copy):
+            os.remove(hip_copy)
+
+
+def _post_hipify_fixup(repo_root):
+    _sync_hip_glm_tree(repo_root)
+    _fix_hipified_glm_includes(repo_root)
+    _fix_hip_include_paths(repo_root)
+    _remove_hip_csrc_duplicate_cuhs(repo_root)
+    hip_include = osp.join(repo_root, "gsplat", "hip", "include")
+    if osp.isdir(hip_include):
+        import shutil
+
+        shutil.rmtree(hip_include)
+
+
 def _make_rocm_extension(sources, extra_include_paths):
     """Build gsplat.csrc with upstream sources and ROCm/HIP compile flags."""
     from torch.utils.cpp_extension import CUDAExtension
@@ -449,6 +542,8 @@ def _make_rocm_extension(sources, extra_include_paths):
 
     cxx_flags = [
         "-D__HIP_PLATFORM_AMD__",
+        "-D__HIP__",
+        "-DCUDA_VERSION=12000",
         "-Wno-sign-compare",
         "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
         "-DUSE_ROCM",
@@ -466,6 +561,8 @@ def _make_rocm_extension(sources, extra_include_paths):
     hipcc_flags = [
         "-D__HIP_PLATFORM_AMD__",
         "-D__HIP_PLATFORM_HCC__=1",
+        "-D__HIP__",
+        "-DCUDA_VERSION=12000",
         "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
         "-DUSE_ROCM",
         f"--rocm-path={rocm_home}",
@@ -479,7 +576,10 @@ def _make_rocm_extension(sources, extra_include_paths):
     if LINE_INFO:
         hipcc_flags += ["-gline-tables-only"]
     if torch.version.hip:
-        define_macros += [("USE_ROCM", "1")]
+        define_macros += [
+            ("USE_ROCM", "1"),
+            ("C10_CUDA_NO_CMAKE_CONFIGURE_FILE", "1"),
+        ]
         undef_macros += ["__HIP_NO_HALF_CONVERSIONS__"]
     if ENABLE_TEST_COVERAGE:
         extra_compile_args["cxx"] += [
@@ -495,7 +595,12 @@ def _make_rocm_extension(sources, extra_include_paths):
 
     current_dir = pathlib.Path(__file__).parent.resolve()
     include_dirs = _merge_include_dirs(
-        [osp.join(current_dir, "gsplat", "cuda", "include")],
+        [
+            # libcu++/CCCL shims (cuda/std/*, cuda/atomic) — must precede SDK paths.
+            osp.join(current_dir, "gsplat", "cuda", "include", "rocm_compat"),
+            osp.join(current_dir, "gsplat", "cuda", "include"),
+            osp.join(current_dir, "gsplat", "cuda", "csrc"),
+        ],
         get_rocm_include_dirs(rocm_home),
         extra_include_paths,
     )
@@ -509,7 +614,7 @@ def _make_rocm_extension(sources, extra_include_paths):
     if conda_prefix:
         library_dirs.append(osp.join(conda_prefix, "lib"))
 
-    return CUDAExtension(
+    extension = CUDAExtension(
         "gsplat.csrc",
         sources,
         include_dirs=include_dirs,
@@ -519,6 +624,8 @@ def _make_rocm_extension(sources, extra_include_paths):
         extra_compile_args=extra_compile_args,
         extra_link_args=extra_link_args,
     )
+    _post_hipify_fixup(current_dir)
+    return extension
 
 
 def get_extensions():

@@ -25,17 +25,16 @@
 #include <glm/glm.hpp>
 
 #ifndef USE_ROCM
-#include <c10/cuda/CUDAStream.h> // at::cuda::getCurrentCUDAStream
-#include <c10/cuda/CUDACachingAllocator.h>
-#include <cooperative_groups.h>
-#include <c10/hip/CUDAGuard.h>
+#    include <c10/cuda/CUDAStream.h> // at::cuda::getCurrentCUDAStream
+#    include <c10/cuda/CUDACachingAllocator.h>
+#    include <cooperative_groups.h>
+#    include <c10/cuda/CUDAGuard.h>
 #else
-#include <c10/hip/HIPStream.h> // at::hip::getCurrentHIPStream
-#include <c10/hip/HIPCachingAllocator.h>
-#include <c10/hip/HIPStream.h>
-#include <c10/hip/HIPGuard.h>
-#include <c10/core/DeviceGuard.h>
-#include <ATen/DeviceGuard.h>
+#    include <c10/hip/HIPStream.h>
+#    include <c10/hip/HIPCachingAllocator.h>
+#    include <c10/hip/HIPGuard.h>
+#    include <c10/core/DeviceGuard.h>
+#    include "RocmCeilDiv.cuh"
 #endif
 
 namespace gsplat
@@ -52,20 +51,22 @@ namespace gsplat
 #define CHECK_DENSE(x)     TORCH_CHECK(x.layout() == c10::kStrided, #x " must be a dense tensor")
 
 #ifndef USE_ROCM
-#define GET_CURRENT_STREAM() at::cuda::getCurrentCUDAStream()
-#define DEVICE_GUARD(_ten) const at::OptionalDeviceGuard device_guard(device_of(_ten));
+#    define GET_CURRENT_STREAM() at::cuda::getCurrentCUDAStream()
+#    define DEVICE_GUARD(_ten) const at::cuda::OptionalCUDAGuard device_guard(device_of(_ten));
+#    define GSPLAT_GRID_CONSTANT __grid_constant__
 #else
-#define cub hipcub
-#define GET_CURRENT_STREAM() at::hip::getCurrentHIPStream()
-#define DEVICE_GUARD(_ten) const at::hip::OptionalHIPGuard device_guard(device_of(_ten));
-#define cudaFuncSetAttribute hipFuncSetAttribute
-#define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
-#define cudaSuccess hipSuccess
+#    define cub hipcub
+#    define GET_CURRENT_STREAM() at::cuda::getCurrentCUDAStream()
+#    define DEVICE_GUARD(_ten) const at::cuda::OptionalCUDAGuard device_guard(device_of(_ten));
+#    define GSPLAT_GRID_CONSTANT
+#    define cudaFuncSetAttribute hipFuncSetAttribute
+#    define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
+#    define cudaSuccess hipSuccess
 #endif
 
 // Host/device qualifier for helpers shared between host (tests, host-side
-// setup) and device code. Expands to nothing under a non-CUDA compiler.
-#ifdef __CUDACC__
+// setup) and device code.
+#if defined(__CUDACC__) || defined(__HIP__)
 #    define GSPLAT_HOST_DEVICE __host__ __device__
 #else
 #    define GSPLAT_HOST_DEVICE
