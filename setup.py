@@ -44,11 +44,11 @@ def _bootstrap_rocm_env():
     """Point ROCm tooling at pip SDK (devel preferred) before torch import."""
     rocm_home = os.environ.get("ROCM_HOME")
     if not rocm_home or not osp.isdir(osp.join(rocm_home, "include", "hip")):
-        rocm_home = None
-        if osp.isdir(osp.join("/opt/rocm", "include", "hip")):
+        rocm_home = _find_rocm_sdk_in_site_packages()
+        if not rocm_home and osp.isdir(osp.join("/opt/rocm", "include", "hip")):
             rocm_home = "/opt/rocm"
-        else:
-            rocm_home = _find_rocm_sdk_in_site_packages() or "/opt/rocm"
+        if not rocm_home:
+            rocm_home = "/opt/rocm"
 
     rocm_home = osp.abspath(rocm_home)
     rocm_bin = osp.join(rocm_home, "bin")
@@ -80,15 +80,15 @@ if os.path.exists(_version_file):
 
 
 def get_rocm_sdk_root():
-    """Resolve ROCm SDK root: ROCM_HOME, devel, core, or /opt/rocm."""
+    """Resolve ROCm SDK root: ROCM_HOME, pip SDK in venv, or /opt/rocm."""
     rocm_home = os.environ.get("ROCM_HOME")
     if rocm_home and osp.isdir(osp.join(rocm_home, "include", "hip")):
         return osp.abspath(rocm_home)
-    if osp.isdir(osp.join("/opt/rocm", "include", "hip")):
-        return "/opt/rocm"
     found = _find_rocm_sdk_in_site_packages()
     if found:
         return found
+    if osp.isdir(osp.join("/opt/rocm", "include", "hip")):
+        return "/opt/rocm"
     return "/opt/rocm"
 
 
@@ -96,10 +96,12 @@ def get_rocm_include_dirs(rocm_home):
     """Collect ROCm-related include directories (HIP, thrust, rocprim, hipcub)."""
     repo_root = osp.dirname(osp.abspath(__file__))
     sdk_include = osp.join(rocm_home, "include")
-    include_dirs = [
-        sdk_include,
-        osp.expanduser("~/.local/include"),
-    ]
+    include_dirs = [sdk_include]
+    vendored_glm = osp.join(
+        repo_root, "gsplat", "cuda", "csrc", "third_party", "glm", "glm", "glm.hpp"
+    )
+    if not osp.isfile(vendored_glm):
+        include_dirs.append(osp.expanduser("~/.local/include"))
 
     extra_includes = os.environ.get("ROCM_EXTRA_INCLUDES", "")
     if extra_includes:
@@ -519,7 +521,27 @@ def _post_hipify_fixup(repo_root):
         shutil.rmtree(hip_include)
 
 
-def _make_rocm_extension(sources, extra_include_paths):
+def _filter_rocm_host_flags(cflags):
+    """Drop CUDA-only flags from build.py before passing them to hipcc host compiles."""
+    skip = {
+        "--forward-unknown-opts",
+        "--expt-relaxed-constexpr",
+        "-use_fast_math",
+        "-lineinfo",
+    }
+    skip_prefixes = ("-diag-suppress", "-Xcompiler=")
+    out = []
+    for flag in cflags:
+        if flag in skip or any(flag.startswith(p) for p in skip_prefixes):
+            continue
+        if flag.startswith("-DGSPLAT_NUM_CHANNELS="):
+            out.append(flag.replace("\\,", ","))
+            continue
+        out.append(flag)
+    return out
+
+
+def _make_rocm_extension(sources, extra_include_paths, params):
     """Build gsplat.csrc with upstream sources and ROCm/HIP compile flags."""
     from torch.utils.cpp_extension import CUDAExtension
 
@@ -547,6 +569,7 @@ def _make_rocm_extension(sources, extra_include_paths):
         "-Wno-sign-compare",
         "-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE",
         "-DUSE_ROCM",
+        "-DHIP_ENABLE_WARP_SYNC_BUILTINS=1",
         "-DAT_PARALLEL_OPENMP",
         "-fopenmp",
     ]
@@ -573,6 +596,8 @@ def _make_rocm_extension(sources, extra_include_paths):
         hipcc_flags += ["-g", "-ggdb", "-O0"]
     else:
         hipcc_flags += ["-O3"]
+        # hipcc warns when #pragma unroll cannot be honored (-Wpass-failed=transform-warning).
+        hipcc_flags += ["-Wno-pass-failed"]
     if LINE_INFO:
         hipcc_flags += ["-gline-tables-only"]
     if torch.version.hip:
@@ -591,6 +616,12 @@ def _make_rocm_extension(sources, extra_include_paths):
         hipcc_flags += ["-fprofile-instr-generate", "-fcoverage-mapping"]
         extra_link_args += ["-fprofile-instr-generate"]
 
+    for flag in _filter_rocm_host_flags(params.extra_cflags):
+        if flag not in cxx_flags:
+            cxx_flags.append(flag)
+        if flag.startswith("-D") and flag not in hipcc_flags:
+            hipcc_flags.append(flag)
+
     extra_compile_args["nvcc"] = hipcc_flags
 
     current_dir = pathlib.Path(__file__).parent.resolve()
@@ -601,8 +632,8 @@ def _make_rocm_extension(sources, extra_include_paths):
             osp.join(current_dir, "gsplat", "cuda", "include"),
             osp.join(current_dir, "gsplat", "cuda", "csrc"),
         ],
-        get_rocm_include_dirs(rocm_home),
         extra_include_paths,
+        get_rocm_include_dirs(rocm_home),
     )
     print(f"ROCm include dirs: {include_dirs}")
 
@@ -640,7 +671,7 @@ def get_extensions():
     sources = [os.path.relpath(s, setup_dir) for s in params.sources]
 
     if IS_ROCM:
-        return [_make_rocm_extension(sources, params.extra_include_paths)]
+        return [_make_rocm_extension(sources, params.extra_include_paths, params)]
 
     gsplat_ext = CUDAExtension(
         "gsplat.csrc",

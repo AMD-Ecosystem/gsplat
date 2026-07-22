@@ -39,10 +39,14 @@
 //
 // in GLM
 #define GLM_ENABLE_EXPERIMENTAL
+#ifndef USE_ROCM
 #pragma nv_diag_suppress = esa_on_defaulted_function_ignored
+#endif
 #include <glm/gtx/matrix_operation.hpp> // needs define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/quaternion.hpp>       // glm rotate
+#ifndef USE_ROCM
 #pragma nv_diag_default = esa_on_defaulted_function_ignored
+#endif
 
 #include "Cameras.h"
 #include "ExternalDistortion.cuh"
@@ -526,6 +530,10 @@ struct BaseCameraModel
 
         case ShutterType::ROLLING_RIGHT_TO_LEFT:
             t = (resolution[0] - ::ceil(image_point.x)) / (resolution[0] - 1);
+            break;
+
+        case ShutterType::GLOBAL:
+            // All pixels share the same exposure time; t stays 0.
             break;
         }
 

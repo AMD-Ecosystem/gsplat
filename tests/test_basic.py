@@ -2431,8 +2431,8 @@ def test_rasterize_to_pixels(test_data, channels: int, batch_dims: Tuple[int, ..
 
     # Identify intersecting tiles.
     # CDIM=128 needs a smaller tile so backward shared memory stays within
-    # device limits. Use tile_size=8 on AMD (tile_size=4 can hang).
-    tile_size = 16 if channels <= 32 else 8
+    # device limits (classic 3DGS supports tile_size in {4, 16} only).
+    tile_size = 16 if channels <= 32 else 4
     tile_width = math.ceil(width / float(tile_size))
     tile_height = math.ceil(height / float(tile_size))
     tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(

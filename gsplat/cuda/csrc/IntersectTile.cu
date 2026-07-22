@@ -27,16 +27,19 @@
 
 // for CUB_WRAPPER
 #include <c10/cuda/CUDACachingAllocator.h>
-#include <cub/cub.cuh>
+#if USE_ROCM
+#    include <hipcub/device/device_radix_sort.hpp>
+#    include <hipcub/device/device_segmented_radix_sort.hpp>
+#    include <hipcub/device/device_scan.hpp>
+#    include <hipcub/device/device_merge_sort.hpp>
+#    include <hipcub/util_type.hpp>
+#else
+#    include <cub/cub.cuh>
+#endif
 
 #include "MathUtils.h"
 #include "Common.h"
 #include "Common.cuh"
-#if USE_ROCM
-#include <hipcub/device/device_radix_sort.hpp>
-#include <hipcub/device/device_segmented_radix_sort.hpp>
-#include <hipcub/util_type.hpp>
-#endif
 
 #include "Intersect.h"
 #include "Utils.cuh"

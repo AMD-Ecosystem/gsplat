@@ -226,8 +226,8 @@ def _resolve_tile_size(
         return tile_size
     if with_eval3d:
         return 16 if min(width, height) >= 1080 else 8
-    # tile=8 is the default on AMD GPUs (better performance than tile=16).
-    return 8
+    # Classic 3DGS kernels only support tile_size in {4, 16}; default to 16.
+    return 16
 
 
 @trace_function("render")

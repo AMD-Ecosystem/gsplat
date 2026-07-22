@@ -86,6 +86,10 @@ __global__ void projection_ewa_simple_fwd_kernel(
     case CameraModelType::FISHEYE: // fisheye projection
         fisheye_proj(mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d);
         break;
+    case CameraModelType::FTHETA:
+    case CameraModelType::LIDAR:
+        // EWA projection does not support these models; host validates before launch.
+        return;
     }
 
 // write to outputs: glm is column-major but we want row-major
@@ -217,6 +221,10 @@ __global__ void projection_ewa_simple_bwd_kernel(
             mean, covar, fx, fy, cx, cy, width, height, glm::transpose(v_covar2d), v_mean2d, v_mean, v_covar
         );
         break;
+    case CameraModelType::FTHETA:
+    case CameraModelType::LIDAR:
+        // EWA projection does not support these models; host validates before launch.
+        return;
     }
 
 // write to outputs: glm is column-major but we want row-major

@@ -180,6 +180,10 @@ __global__ void __launch_bounds__(CTA_SIZE, FUSE_SH ? FUSED_MIN_BLOCKS : PROJ_MI
                 mean_c, covar_c, Ks_b[0], Ks_b[4], Ks_b[2], Ks_b[5], image_width, image_height, covar2d, mean2d
             );
             break;
+        case CameraModelType::FTHETA:
+        case CameraModelType::LIDAR:
+            // EWA projection does not support these models; host validates before launch.
+            return false;
         }
 
         float compensation;

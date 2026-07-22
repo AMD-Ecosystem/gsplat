@@ -61,7 +61,8 @@ def get_build_parameters() -> SimpleNamespace:
     else:
         extra_cflags = ["-std=c++20"]
 
-    extra_cuda_cflags += ["--forward-unknown-opts"]
+    if not torch.version.hip:
+        extra_cuda_cflags += ["--forward-unknown-opts"]
     extra_cflags += ["-g", "-O0"] if DEBUG else ["-O3", "-DNDEBUG"]
     extra_cuda_cflags += ["-use_fast_math"] if FAST_MATH else []
     extra_cuda_cflags += ["-lineinfo"] if DEBUG else []

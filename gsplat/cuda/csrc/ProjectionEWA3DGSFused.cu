@@ -151,6 +151,12 @@ __global__ void projection_ewa_3dgs_fused_fwd_kernel(
     case CameraModelType::FISHEYE: // fisheye projection
         fisheye_proj(mean_c, covar_c, Ks[0], Ks[4], Ks[2], Ks[5], image_width, image_height, covar2d, mean2d);
         break;
+    case CameraModelType::FTHETA:
+    case CameraModelType::LIDAR:
+        // EWA projection does not support these models; host validates before launch.
+        radii[global_idx * 2]     = 0;
+        radii[global_idx * 2 + 1] = 0;
+        return;
     }
 
     float compensation;
@@ -553,6 +559,10 @@ __global__ void projection_ewa_3dgs_fused_bwd_kernel(
             v_covar_c
         );
         break;
+    case CameraModelType::FTHETA:
+    case CameraModelType::LIDAR:
+        // EWA projection does not support these models; host validates before launch.
+        return;
     }
 
     // add contribution from v_depths

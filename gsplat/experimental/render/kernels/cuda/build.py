@@ -133,7 +133,8 @@ def get_build_parameters():
         extra_cflags += ["-arch", "arm64"]
         extra_ldflags += ["-arch", "arm64"]
 
-    extra_cuda_cflags += ["--forward-unknown-opts"]
+    if not torch.version.hip:
+        extra_cuda_cflags += ["--forward-unknown-opts"]
 
     if DEBUG:
         extra_cflags += ["-g", "-O0"]
@@ -170,6 +171,9 @@ def get_build_parameters():
 
     if torch.version.hip:
         extra_cflags += ["-DUSE_ROCM", "-U__HIP_NO_HALF_CONVERSIONS__"]
+        if not DEBUG:
+            # Suppress hipcc -Wpass-failed=transform-warning from #pragma unroll.
+            extra_cuda_cflags += ["-Wno-pass-failed"]
     else:
         extra_cuda_cflags += ["--expt-relaxed-constexpr"]
 
