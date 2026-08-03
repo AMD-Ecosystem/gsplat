@@ -487,3 +487,4 @@ void launch_projection_sh_fused_kernel(
     }
 }
 } // namespace higs
+>>>>>>> refs/remotes/origin/fix/rocm-wsl-compile-build
