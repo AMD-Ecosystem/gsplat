@@ -36,9 +36,36 @@ NINJA_STATUS = os.getenv("NINJA_STATUS")
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
 
 
+def _rocm_lib_dir() -> str | None:
+    """Locate the pip ROCm SDK lib dir holding libamdhip64.
+
+    torch resolves ROCM_HOME from the hipcc on PATH (here ``.venv/bin/hipcc``),
+    so it emits ``-L<venv>/lib -lamdhip64`` — but the runtime lib actually lives
+    in the ``_rocm_sdk_devel`` site-package. Return that dir so the JIT link can
+    find libamdhip64; None when no pip SDK is present (e.g. system /opt/rocm).
+    """
+    import site
+
+    candidates = list(site.getsitepackages())
+    user_site = site.getusersitepackages()
+    if user_site:
+        candidates.append(user_site)
+    for sp in candidates:
+        for name in ("_rocm_sdk_devel", "_rocm_sdk_core"):
+            lib = os.path.join(sp, name, "lib")
+            if os.path.exists(os.path.join(lib, "libamdhip64.so")):
+                return lib
+    return None
+
+
 def get_build_parameters() -> SimpleNamespace:
     name = "gsplat_geometry_cuda"
-    extra_include_paths: list[str] = []
+    # The csrc dir holds the .cuh headers included by the .cu sources. On ROCm,
+    # torch's JIT hipify only hipifies headers it can find via header_include_dirs
+    # (fed from extra_include_paths); without this the .cuh files are never
+    # hipified/copied into the generated hip/csrc tree and the build fails with
+    # "'pose.cuh' file not found".
+    extra_include_paths: list[str] = [os.path.join(PATH, "csrc")]
     sources = [
         os.path.join(PATH, "ext.cpp"),
         os.path.join(PATH, "csrc", "quaternion.cu"),
@@ -72,6 +99,9 @@ def get_build_parameters() -> SimpleNamespace:
 
     if torch.version.hip:
         extra_cflags += ["-DUSE_ROCM", "-U__HIP_NO_HALF_CONVERSIONS__"]
+        rocm_lib = _rocm_lib_dir()
+        if rocm_lib is not None:
+            extra_ldflags += [f"-L{rocm_lib}", f"-Wl,-rpath,{rocm_lib}"]
     else:
         extra_cuda_cflags += ["--expt-relaxed-constexpr"]
 
