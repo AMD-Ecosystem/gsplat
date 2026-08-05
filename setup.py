@@ -600,6 +600,18 @@ def _make_rocm_extension(sources, extra_include_paths, params):
         hipcc_flags += ["-Wno-pass-failed"]
     if LINE_INFO:
         hipcc_flags += ["-gline-tables-only"]
+    # ROCm's clang defaults to the newest installed gcc libstdc++. gcc-14's
+    # <format> pulls in bits/unicode.h, which has a libstdc++ bug (`++this;`
+    # instead of `++*this;`) that clang rejects but g++ tolerates. Pin clang to
+    # a gcc toolchain whose headers compile — prefer 13, fall back to 12. Both
+    # the device (hipcc) and host (.cpp via CXX=hipcc) compiles are clang-based,
+    # so the flag must go on both flag sets.
+    for _gcc_ver in ("13", "12"):
+        _gcc_dir = f"/usr/lib/gcc/x86_64-linux-gnu/{_gcc_ver}"
+        if osp.isdir(_gcc_dir):
+            hipcc_flags.append(f"--gcc-install-dir={_gcc_dir}")
+            cxx_flags.append(f"--gcc-install-dir={_gcc_dir}")
+            break
     if torch.version.hip:
         define_macros += [
             ("USE_ROCM", "1"),

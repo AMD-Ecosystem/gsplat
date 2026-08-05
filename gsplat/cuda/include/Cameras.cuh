@@ -1533,7 +1533,7 @@ struct OpenCVFisheyeCameraModel
 
 struct FThetaCameraDistortionDeviceParams
 {
-    inline __device__ FThetaCameraDistortionDeviceParams() { }
+    inline __host__ __device__ FThetaCameraDistortionDeviceParams() { }
 
     inline __host__ FThetaCameraDistortionDeviceParams(const FThetaCameraDistortionParameters &params)
         : reference_poly(params.reference_poly)
