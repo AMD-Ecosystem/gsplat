@@ -102,6 +102,16 @@ def get_build_parameters() -> SimpleNamespace:
         rocm_lib = _rocm_lib_dir()
         if rocm_lib is not None:
             extra_ldflags += [f"-L{rocm_lib}", f"-Wl,-rpath,{rocm_lib}"]
+        # ROCm's clang defaults to the newest installed gcc libstdc++. gcc-14's
+        # <format> pulls in bits/unicode.h, which has a libstdc++ bug (`++this;`
+        # instead of `++*this;`) that clang rejects but g++ tolerates. Pin clang
+        # to a gcc toolchain whose headers compile — prefer 13, fall back to 12.
+        # Clang-only flag: goes in extra_cuda_cflags, not extra_cflags.
+        for _gcc_ver in ("13", "12"):
+            _gcc_dir = f"/usr/lib/gcc/x86_64-linux-gnu/{_gcc_ver}"
+            if os.path.isdir(_gcc_dir):
+                extra_cuda_cflags.append(f"--gcc-install-dir={_gcc_dir}")
+                break
     else:
         extra_cuda_cflags += ["--expt-relaxed-constexpr"]
 
