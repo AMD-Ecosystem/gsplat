@@ -314,6 +314,17 @@ def _detect_cupy_requirement() -> str:
     if override:
         return override
 
+    # cupy-cudaXx wheels target NVIDIA CUDA and are irrelevant when building
+    # against ROCm/HIP; skip the nvcc/CUDA-toolkit probing entirely so a box
+    # without any CUDA install doesn't error or pick a mismatched wheel.
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None):
+            return "cupy"
+    except Exception:
+        pass
+
     import warnings
 
     cuda_roots = []
