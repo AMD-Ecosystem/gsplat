@@ -72,6 +72,28 @@ def _rocm_lib_dir() -> str | None:
     return None
 
 
+def _rocm_sdk_include_dir() -> str | None:
+    """Locate the pip ROCm SDK include dir that ships hipsparse/hipsparse.h.
+
+    torch emits its ROCm includes from ``_rocm_sdk_core``, but torch's own
+    ``ATen/hip`` headers pull in ``hipsparse/hipsparse.h`` which only ships in
+    ``_rocm_sdk_devel``. Return that include dir so it can be added via
+    ``-isystem``; None when no pip SDK is present (e.g. system /opt/rocm).
+    """
+    import site
+
+    candidates = list(site.getsitepackages())
+    user_site = site.getusersitepackages()
+    if user_site:
+        candidates.append(user_site)
+    for sp in candidates:
+        for name in ("_rocm_sdk_devel", "_rocm_sdk_core"):
+            inc = os.path.join(sp, name, "include")
+            if os.path.isfile(os.path.join(inc, "hipsparse", "hipsparse.h")):
+                return inc
+    return None
+
+
 def get_build_parameters() -> SimpleNamespace:
     """Enumerate source files and compiler flags for the CUDA extension.
 
@@ -131,6 +153,12 @@ def get_build_parameters() -> SimpleNamespace:
         rocm_lib = _rocm_lib_dir()
         if rocm_lib is not None:
             extra_ldflags += [f"-L{rocm_lib}", f"-Wl,-rpath,{rocm_lib}"]
+        # hipsparse.h (pulled in by torch's ATen/hip headers) ships only in the
+        # _rocm_sdk_devel include tree, which torch's JIT does not add. Feed it
+        # via -isystem; extra_cflags is merged into extra_cuda_cflags below.
+        rocm_inc = _rocm_sdk_include_dir()
+        if rocm_inc is not None:
+            extra_cflags += [f"-isystem{rocm_inc}"]
         # ROCm's clang defaults to the newest installed gcc libstdc++. gcc-14's
         # <format> pulls in bits/unicode.h, which has a libstdc++ bug (`++this;`
         # instead of `++*this;`) that clang rejects but g++ tolerates. Pin clang

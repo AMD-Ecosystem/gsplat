@@ -92,6 +92,20 @@ def get_rocm_sdk_root():
     return "/opt/rocm"
 
 
+def sdk_has_real_libcudacxx(rocm_home):
+    """True if the ROCm SDK ships a real libcu++/CCCL ``cuda/std`` tree.
+
+    Newer ROCm SDKs (>= 7.x) vendor full libcu++. In that case the local
+    ``rocm_compat`` stubs must NOT be placed ahead of the SDK includes, or they
+    shadow the real ``<cuda/std/*>`` headers and break thrust (which pulls in
+    ``cuda::std::is_arithmetic`` et al. via ``thrust/complex.h``).
+    """
+    sdk_include = osp.join(rocm_home, "include")
+    return osp.isfile(
+        osp.join(sdk_include, "cuda", "std", "__internal", "namespaces.h")
+    )
+
+
 def get_rocm_include_dirs(rocm_home):
     """Collect ROCm-related include directories (HIP, thrust, rocprim, hipcub)."""
     repo_root = osp.dirname(osp.abspath(__file__))
@@ -648,13 +662,19 @@ def _make_rocm_extension(sources, extra_include_paths, params):
     extra_compile_args["nvcc"] = hipcc_flags
 
     current_dir = pathlib.Path(__file__).parent.resolve()
+    project_include_dirs = [
+        osp.join(current_dir, "gsplat", "cuda", "include"),
+        osp.join(current_dir, "gsplat", "cuda", "csrc"),
+    ]
+    if not sdk_has_real_libcudacxx(rocm_home):
+        # Older ROCm SDKs lack libcu++/CCCL; inject the local cuda/std stubs
+        # ahead of the SDK. On SDKs that ship real libcu++ this would shadow the
+        # real <cuda/std/*> headers and break thrust, so it is skipped.
+        project_include_dirs.insert(
+            0, osp.join(current_dir, "gsplat", "cuda", "include", "rocm_compat")
+        )
     include_dirs = _merge_include_dirs(
-        [
-            # libcu++/CCCL shims (cuda/std/*, cuda/atomic) — must precede SDK paths.
-            osp.join(current_dir, "gsplat", "cuda", "include", "rocm_compat"),
-            osp.join(current_dir, "gsplat", "cuda", "include"),
-            osp.join(current_dir, "gsplat", "cuda", "csrc"),
-        ],
+        project_include_dirs,
         extra_include_paths,
         get_rocm_include_dirs(rocm_home),
     )

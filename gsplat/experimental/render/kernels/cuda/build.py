@@ -64,6 +64,50 @@ NINJA_STATUS = os.getenv("NINJA_STATUS")
 VERBOSE = os.getenv("VERBOSE", "0") == "1"
 
 
+def _rocm_sdk_include_dir():
+    """Locate the pip ROCm SDK include dir that ships hipsparse/hipsparse.h.
+
+    torch emits its ROCm includes from ``_rocm_sdk_core``, but torch's own
+    ``ATen/hip`` headers pull in ``hipsparse/hipsparse.h`` which only ships in
+    ``_rocm_sdk_devel``. Return that include dir so it can be added via
+    ``-isystem``; None when no pip SDK is present (e.g. system /opt/rocm).
+    """
+    import site
+
+    candidates = list(site.getsitepackages())
+    user_site = site.getusersitepackages()
+    if user_site:
+        candidates.append(user_site)
+    for sp in candidates:
+        for name in ("_rocm_sdk_devel", "_rocm_sdk_core"):
+            inc = os.path.join(sp, name, "include")
+            if os.path.isfile(os.path.join(inc, "hipsparse", "hipsparse.h")):
+                return inc
+    return None
+
+
+def _rocm_lib_dir():
+    """Locate the pip ROCm SDK lib dir holding the libamdhip64.so link symlink.
+
+    torch links against ``_rocm_sdk_core/lib``, which only ships the versioned
+    ``libamdhip64.so.7`` — the unversioned ``libamdhip64.so`` that ``-lamdhip64``
+    needs lives in ``_rocm_sdk_devel/lib``. Return that dir; None when no pip SDK
+    is present (e.g. system /opt/rocm, where the link name already resolves).
+    """
+    import site
+
+    candidates = list(site.getsitepackages())
+    user_site = site.getusersitepackages()
+    if user_site:
+        candidates.append(user_site)
+    for sp in candidates:
+        for name in ("_rocm_sdk_devel", "_rocm_sdk_core"):
+            lib = os.path.join(sp, name, "lib")
+            if os.path.exists(os.path.join(lib, "libamdhip64.so")):
+                return lib
+    return None
+
+
 def get_build_parameters():
     import torch
 
@@ -191,6 +235,17 @@ def get_build_parameters():
         # (extra_cflags is later folded into extra_cuda_cflags, covering nvcc.)
         extra_cflags.append(_glm_include_flag)
         extra_cflags.append(_gsplat_include_flag)
+        # hipsparse.h (pulled in by torch's ATen/hip headers) ships only in the
+        # _rocm_sdk_devel include tree, which torch's JIT does not add.
+        _rocm_inc = _rocm_sdk_include_dir()
+        if _rocm_inc is not None:
+            extra_cflags.append(f"-isystem{_rocm_inc}")
+        # torch links against _rocm_sdk_core/lib, which only has the versioned
+        # libamdhip64.so.7; the unversioned link name -lamdhip64 needs lives in
+        # _rocm_sdk_devel/lib. Add it so the final .so link resolves.
+        _rocm_lib = _rocm_lib_dir()
+        if _rocm_lib is not None:
+            extra_ldflags += [f"-L{_rocm_lib}", f"-Wl,-rpath,{_rocm_lib}"]
         # ROCm's clang defaults to the newest installed gcc libstdc++. gcc-14's
         # <format> pulls in bits/unicode.h, which has a libstdc++ bug (`++this;`
         # instead of `++*this;`) that clang rejects but g++ tolerates. Pin clang
