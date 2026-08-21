@@ -1,5 +1,9 @@
 # Development
 
+## ROCm / HIP builds
+
+For AMD ROCm development (prerequisites, HIP build steps, and verification), see [DevSetup.md](DevSetup.md).
+
 ## Installation
 
 Clone the repository and submodules with

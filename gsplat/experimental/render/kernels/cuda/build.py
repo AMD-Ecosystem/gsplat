@@ -65,19 +65,36 @@ VERBOSE = os.getenv("VERBOSE", "0") == "1"
 
 
 def get_build_parameters():
+    import torch
+
     name = "experimental_gaussian_render_inference_scene_cuda"
     current_dir = PATH
 
     gaussian_render_inference_dir = os.path.join(
         current_dir, "csrc", "gaussian_inference"
     )
+    _glm_dir = os.path.join(_GSPLAT_CSRC, "third_party", "glm")
     # Include paths -----------------------------------
     extra_include_paths = [
-        _GSPLAT_INCLUDE,
         _GSPLAT_CSRC,  # for Config.h (included as #include "Config.h")
         gaussian_render_inference_dir,
-        os.path.join(_GSPLAT_CSRC, "third_party", "glm"),
     ]
+    # GLM is a header-only template library that must NOT be hipified. torch's
+    # JIT hipify treats every extra_include_paths entry as a tree to rewrite,
+    # and it mangles GLM's relative includes while dropping its .inl files
+    # (breaking the build). Under HIP, pass GLM as a plain -I compile flag so
+    # hipify leaves it untouched; on CUDA it can stay in extra_include_paths.
+    _glm_include_flag = f"-I{_glm_dir}"
+    # cuda/include holds the shared headers (Common.h, Utils.cuh, RocmCeilDiv.cuh).
+    # If left in extra_include_paths under HIP, hipify mirrors it into a divergent
+    # hip/include copy and rewrites the .hip sources to include that copy, while
+    # Utils.cuh keeps pulling cuda/include — two paths defeat #pragma once and
+    # every shared symbol is redefined. Pass it as a raw -I under HIP (same as GLM)
+    # so hipify never copies it and all includes resolve to the single cuda tree.
+    _gsplat_include_flag = f"-I{_GSPLAT_INCLUDE}"
+    if not torch.version.hip:
+        extra_include_paths.insert(0, _GSPLAT_INCLUDE)
+        extra_include_paths.append(_glm_dir)
 
     # Fix for CUDA 12+ in conda environment
     if CUDA_HOME and os.path.isdir(os.path.join(CUDA_HOME, "targets")):
@@ -133,7 +150,8 @@ def get_build_parameters():
         extra_cflags += ["-arch", "arm64"]
         extra_ldflags += ["-arch", "arm64"]
 
-    extra_cuda_cflags += ["--forward-unknown-opts"]
+    if not torch.version.hip:
+        extra_cuda_cflags += ["--forward-unknown-opts"]
 
     if DEBUG:
         extra_cflags += ["-g", "-O0"]
@@ -156,7 +174,8 @@ def get_build_parameters():
 
     extra_cuda_cflags += ["-use_fast_math"] if FAST_MATH else []
 
-    extra_cuda_cflags += ["-diag-suppress", "20012,186"]
+    if not torch.version.hip:
+        extra_cuda_cflags += ["-diag-suppress", "20012,186"]
     if not os.name == "nt":
         extra_cflags += ["-Wno-attributes"]
         extra_cflags += ["-Wno-unknown-pragmas"]
@@ -164,12 +183,28 @@ def get_build_parameters():
     extra_ldflags += [] if WITH_SYMBOLS or sys.platform == "win32" else ["-s"]
 
     if WITH_SYMBOLS:
-        extra_cuda_cflags += ["-lineinfo"]
-
-    import torch
+        extra_cuda_cflags += ["-lineinfo"] if not torch.version.hip else []
 
     if torch.version.hip:
         extra_cflags += ["-DUSE_ROCM", "-U__HIP_NO_HALF_CONVERSIONS__"]
+        # GLM and cuda/include passed as raw -I so hipify never rewrites them.
+        # (extra_cflags is later folded into extra_cuda_cflags, covering nvcc.)
+        extra_cflags.append(_glm_include_flag)
+        extra_cflags.append(_gsplat_include_flag)
+        # ROCm's clang defaults to the newest installed gcc libstdc++. gcc-14's
+        # <format> pulls in bits/unicode.h, which has a libstdc++ bug (`++this;`
+        # instead of `++*this;`) that clang rejects but g++ tolerates. Pin clang
+        # to a gcc toolchain whose headers compile — prefer 13, fall back to 12.
+        # This is a clang-only flag, so it must go in the CUDA (clang) flags and
+        # NOT extra_cflags (which also drives the host g++ compile of ext.cpp).
+        for _gcc_ver in ("13", "12"):
+            _gcc_dir = f"/usr/lib/gcc/x86_64-linux-gnu/{_gcc_ver}"
+            if os.path.isdir(_gcc_dir):
+                extra_cuda_cflags.append(f"--gcc-install-dir={_gcc_dir}")
+                break
+        if not DEBUG:
+            # Suppress hipcc -Wpass-failed=transform-warning from #pragma unroll.
+            extra_cuda_cflags += ["-Wno-pass-failed"]
     else:
         extra_cuda_cflags += ["--expt-relaxed-constexpr"]
 

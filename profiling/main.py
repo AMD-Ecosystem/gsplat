@@ -21,7 +21,9 @@ pytest <THIS_PY_FILE>
 ```
 """
 
+import os
 import time
+import re
 
 import torch
 from typing_extensions import Callable, Literal
@@ -38,6 +40,39 @@ RESOLUTIONS = {
 }
 
 device = torch.device("cuda")
+
+
+def profile_main_execution(func, *args, **kwargs):
+    """Profile the main execution with torch profiler if enabled."""
+    if os.getenv("ENABLE_PROFILER") != "1":
+        return func(*args, **kwargs)
+    
+    # Generate profile name based on parameters
+    config_name = f"mainbench_batch{kwargs.get('batch_size', 1)}_grid{kwargs.get('scene_grid', 15)}_ch{kwargs.get('channels', 3)}"
+    sanitized_name = re.sub(r'[^\w\-_]', '_', config_name)
+    
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+    
+    log_dir = f"./torch_prof/logs/mainbench/{sanitized_name}"
+    print(f"\n[Profiler] Enabled for main benchmark: {config_name}")
+    print(f"[Profiler] Trace will be saved to '{log_dir}'")
+    
+    with torch.profiler.profile(
+        activities=activities,
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(log_dir),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True
+    ) as prof:
+        result = func(*args, **kwargs)
+    
+    print(f"\n[Profiler] Results for {config_name}:")
+    sort_key = "cuda_time_total" if torch.cuda.is_available() else "cpu_time_total"
+    print(prof.key_averages().table(sort_by=sort_key, row_limit=15))
+    
+    return result
 
 
 def timeit(repeats: int, f: Callable, *args, **kwargs) -> float:
@@ -75,7 +110,11 @@ def main(
         Ks,
         width,
         height,
-    ) = load_test_data(device=device, scene_grid=scene_grid)
+    ) = load_test_data(
+        data_path=os.path.join(os.path.dirname(__file__), "../assets/test_garden.npz"),
+        device=device, 
+        scene_grid=scene_grid
+    )
 
     # to batch
     viewmats = viewmats[:1].repeat(batch_size, 1, 1)
@@ -180,10 +219,11 @@ def worker(local_rank: int, world_rank: int, world_size: int, args):
             if "gsplat" in args.backends:
                 print("gsplat packed[True] sparse_grad[True]")
                 for scene_grid in args.scene_grid:
-                    stats = main(
+                    stats = profile_main_execution(
+                        main,
                         batch_size=batch_size,
                         channels=channels,
-                        reso="1080p",
+                        reso=args.resolution,
                         scene_grid=scene_grid,
                         packed=True,
                         sparse_grad=True,
@@ -213,10 +253,11 @@ def worker(local_rank: int, world_rank: int, world_size: int, args):
 
                 print("gsplat packed[True] sparse_grad[False]")
                 for scene_grid in args.scene_grid:
-                    stats = main(
+                    stats = profile_main_execution(
+                        main,
                         batch_size=batch_size,
                         channels=channels,
-                        reso="1080p",
+                        reso=args.resolution,
                         scene_grid=scene_grid,
                         packed=True,
                         sparse_grad=False,
@@ -244,10 +285,11 @@ def worker(local_rank: int, world_rank: int, world_size: int, args):
 
                 print("gsplat packed[False] sparse_grad[False]")
                 for scene_grid in args.scene_grid:
-                    stats = main(
+                    stats = profile_main_execution(
+                        main,
                         batch_size=batch_size,
                         channels=channels,
-                        reso="1080p",
+                        reso=args.resolution,
                         scene_grid=scene_grid,
                         packed=False,
                         sparse_grad=False,
@@ -279,7 +321,7 @@ def worker(local_rank: int, world_rank: int, world_size: int, args):
                     stats = main(
                         batch_size=batch_size,
                         channels=channels,
-                        reso="1080p",
+                        reso=args.resolution,
                         scene_grid=scene_grid,
                         backend="inria",
                         repeats=args.repeats,
@@ -372,6 +414,13 @@ if __name__ == "__main__":
         type=int,
         default=[3],
         help="Number of color channels for profiling",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=str,
+        choices=["360p", "720p", "1080p", "4k"],
+        default="1080p",
+        help="Resolution for profiling (360p, 720p, 1080p, 4k)",
     )
     parser.add_argument(
         "--memory_history",

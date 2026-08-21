@@ -287,7 +287,7 @@ template<
     typename scalar_t
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_fwd_partials_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_fwd_partials_kernel(
         const uint32_t B,
         const uint32_t C,
         const uint32_t N,
@@ -718,7 +718,7 @@ template<
     typename scalar_t
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_fwd_batch_scan_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_fwd_batch_scan_kernel(
         const uint32_t B,
         const uint32_t C,
         const uint32_t N,
@@ -1149,7 +1149,7 @@ template<
     typename scalar_t
 >
 __global__ void
-    __launch_bounds__(CTA_SIZE, min_blocks_for_cdim<CDIM, CTA_SIZE>()) rasterize_to_pixels_from_world_3dgs_fwd_batch_replay_kernel(
+    GSPLAT_LAUNCH_BOUNDS_CTA(CDIM, CTA_SIZE) rasterize_to_pixels_from_world_3dgs_fwd_batch_replay_kernel(
         const uint32_t B,
         const uint32_t C,
         const uint32_t N,
@@ -1601,7 +1601,7 @@ void launch_rasterize_to_pixels_from_world_3dgs_parallel_batch_fwd_kernel(
     );
 
     const bool return_normals   = normals.has_value();
-    at::cuda::CUDAStream stream = at::cuda::getCurrentCUDAStream();
+    auto stream = GET_CURRENT_STREAM();
 
     // -- Dispatch the runtime options to the compiled specializations --------
     auto launch_kernel = [&]<typename ChannelsT,
@@ -1711,6 +1711,7 @@ void launch_rasterize_to_pixels_from_world_3dgs_parallel_batch_fwd_kernel(
             = CTA_SIZE * (sizeof(int32_t) + sizeof(vec4) + sizeof(mat3) + sizeof(vec3) + sizeof(vec3));
 
         // -- Configure dynamic shared memory ----------------------------
+#    ifndef USE_ROCM
         const cudaError_t partials_attr_status = cudaFuncSetAttribute(
             rasterize_to_pixels_from_world_3dgs_fwd_partials_kernel<
                 CDIM,
@@ -1753,6 +1754,52 @@ void launch_rasterize_to_pixels_from_world_3dgs_parallel_batch_fwd_kernel(
                 );
             }
         }
+#    else
+        hipError_t partials_attr_status = hipFuncSetAttribute(
+            reinterpret_cast<void *>(rasterize_to_pixels_from_world_3dgs_fwd_partials_kernel<
+                                     CDIM,
+                                     TILE_SIZE,
+                                     CTA_SIZE,
+                                     ReturnNormals,
+                                     UseHitDistance,
+                                     ForBackward,
+                                     float>),
+            hipFuncAttributeMaxDynamicSharedMemorySize,
+            static_cast<int>(shmem_size)
+        );
+        if(partials_attr_status != hipSuccess)
+        {
+            AT_ERROR(
+                "Failed to set maximum shared memory size (requested ",
+                shmem_size,
+                " bytes), try lowering tile_size. HIP Error: ",
+                hipGetErrorString(partials_attr_status)
+            );
+        }
+        if constexpr(ForBackward)
+        {
+            hipError_t batch_replay_attr_status = hipFuncSetAttribute(
+                reinterpret_cast<void *>(rasterize_to_pixels_from_world_3dgs_fwd_batch_replay_kernel<
+                                         CDIM,
+                                         TILE_SIZE,
+                                         CTA_SIZE,
+                                         ReturnNormals,
+                                         UseHitDistance,
+                                         float>),
+                hipFuncAttributeMaxDynamicSharedMemorySize,
+                static_cast<int>(shmem_size)
+            );
+            if(batch_replay_attr_status != hipSuccess)
+            {
+                AT_ERROR(
+                    "Failed to set max dynamic shmem on batch-replay kernel (",
+                    shmem_size,
+                    " bytes); try lowering tile_size. HIP Error: ",
+                    hipGetErrorString(batch_replay_attr_status)
+                );
+            }
+        }
+#    endif
 
         // ---- Partials pass: 1D grid over total_batches. Skip when
         // total_batches == 0 (degenerate n_isects==0 case) — batch-scan
