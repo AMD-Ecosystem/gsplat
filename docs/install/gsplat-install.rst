@@ -9,7 +9,7 @@ GSplat on ROCm installation
 ********************************************************************
 
 This topic provides instructions for installing GSplat, a component that is part of the
-`ROCm Simulation Domain <https://rocm.docs.amd.com/projects/rocm-simulation/en/docs-25.10/>`__.
+`ROCm Simulation Domain <https://rocm.docs.amd.com/projects/simulation/en/docs-25.10/>`__.
 
 System requirements
 ====================================================================
