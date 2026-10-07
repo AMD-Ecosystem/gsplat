@@ -22,11 +22,6 @@ html_theme_options = {
     "use_source_button": True,
     "use_download_button": True,
 }
-# Publish the llms.txt index at the docs site root and let
-# rocm-docs-core generate llms-full.txt after each build (the llms.txt standard,
-# https://llmstxt.org/). See the rocm-docs-core guide:
-# https://rocm.docs.amd.com/projects/rocm-docs-core/en/latest/user_guide/llms.html
-rocm_docs_generate_llms = True
 
 '''
 docs_header_version is used to manually configure the version in the header. If
