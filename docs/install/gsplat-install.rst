@@ -53,24 +53,24 @@ Docker is the recommended method to set up your environment, as it avoids potent
         --group-add video -it -v $HOME:$HOME --name rocm_pytorch 
         rocm/pytorch:rocm6.4.3_ubuntu24.04_py3.12_pytorch_release_2.6.0
 
-3. After setting up the container, install GSplat from the AMD-hosted `PyPI repository <https://pypi.amd.com/simple/>`__:
+3. After setting up the container, you can install GSplat along with all supported dependencies from the AMD-hosted PyPI repository:
 
    .. code-block:: bash
 
-      pip install amd_gsplat --extra-index-url=https://pypi.amd.com/rocm-6.4.3/simple/
+      pip install -r https://github.com/AMD-Ecosystem/gsplat/releases/download/1.5.3b2/requirements-gsplat-rocm-6.4.3.txt --require-hashes --index-url https://pypi.org/simple
 
 4. Verify the installation:
 
    .. code-block:: bash
 
-      pip show amd_gsplat
+      pip show gsplat
 
 5. The output should show as follows:
 
    .. code-block:: text
 
-      Name: amd_gsplat
-      Version: 1.5.3+4ae1c82
+      Name: gsplat
+      Version: 1.5.3+6f2f06e
       Summary: Python package for differentiable rasterization of Gaussians
       Home-page: https://github.com/AMD-Ecosystem/gsplat
       Author: AMD Corporation
@@ -152,13 +152,13 @@ Build steps
 
    .. code-block:: bash
 
-      pip install dist/amd_gsplat*.whl
+      pip install dist/gsplat*.whl
 
 5. Verify the installation:
 
    .. code-block:: bash
 
-      pip show amd_gsplat
+      pip show gsplat
 
 Run unit tests and verify the installation
 ====================================================================
@@ -171,10 +171,10 @@ These tests ensure the correctness, performance, and stability of the core featu
 
    .. code-block:: bash
 
-      git clone https://github.com/rocm/nerfacc.git
+      git clone https://github.com/AMD-Ecosystem/nerfacc.git
       cd nerfacc
       python setup.py bdist_wheel
-      pip install dist/amd_nerfacc*.whl
+      pip install dist/nerfacc*.whl
 
 2. Run specific tests from the ``tests`` directory:
 
@@ -202,4 +202,4 @@ Limitations
 
 - Compression of ``splat parameters`` (``positions``, ``scales``, ``rotations``, ``colors``, and ``features``) using PNG image encoding is not supported.  
 - Usage of ``Fused SSIM`` and ``Fused Bilagrid`` in the simple trainer is not supported (torch-based implementations are used instead).  
-- Distributed training with the ``packed`` option is not supported. 
+- Distributed training with the ``packed`` option is not supported.
