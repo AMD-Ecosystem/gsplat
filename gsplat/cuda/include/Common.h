@@ -39,9 +39,8 @@ namespace gsplat {
 #else
 #define cub hipcub
 #define GET_CURRENT_STREAM() at::hip::getCurrentHIPStream()
-#define DEVICE_GUARD(_ten)
-    //const c10::OptionalDeviceGuard device_guard(at::device_of(_ten));                                                   \
-    const at::hip::OptionalHIPGuard device_guard(device_of(_ten));
+#define DEVICE_GUARD(_ten)                                                     \
+    const c10::OptionalDeviceGuard device_guard(at::device_of(_ten));
 #define cudaFuncSetAttribute hipFuncSetAttribute
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define cudaSuccess hipSuccess
