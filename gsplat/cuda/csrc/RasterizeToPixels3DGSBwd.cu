@@ -54,7 +54,7 @@ template <uint32_t numel, typename T>
 __device__ void dpp_vec_warpSum(T &val) {
           #pragma unroll
           for (int e=0; e<numel; e++)
-            dpp_sprd_warpSum(val[e], e%64, val[e/64]);
+            dpp_sprd_warpSum(val[e], e % GSPLAT_WARP_SIZE, val[e / GSPLAT_WARP_SIZE]);
 }
 
 template <typename T>
@@ -343,9 +343,9 @@ __global__ void rasterize_bs64_to_pixels_3dgs_bwd_kernel(
 
             float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;
 #pragma unroll
-            for (uint32_t k = 0; k < CDIM; k+=64) {
+            for (uint32_t k = 0; k < CDIM; k += GSPLAT_WARP_SIZE) {
 		if (k + warp.thread_rank() < CDIM)
-                    atomicAdd(v_rgb_ptr + k + warp.thread_rank(), v_rgb_local[k/64]);
+                    atomicAdd(v_rgb_ptr + k + warp.thread_rank(), v_rgb_local[k / GSPLAT_WARP_SIZE]);
             }
 
             if (warp.thread_rank() == 0) {
@@ -776,7 +776,7 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
       if (CDIM <= 16) {
         max_batch_size = block_size;
       }
-      const uint32_t warps_per_block = (block_size + 63) / 64; // for 64-lane warp
+      const uint32_t warps_per_block = (block_size + 31) / 32; // upper bound over 32- and 64-lane wavefronts
       std::size_t warp_scratch_bytes =
         warps_per_block * sizeof(typename rocprim::warp_reduce<float, GSPLAT_WARP_SIZE>::storage_type);
       shmem_size =

@@ -19,7 +19,9 @@
 #include <rocprim/warp/warp_reduce.hpp>
 // Hardware wavefront size of the device compile target: 64 on CDNA (gfx9xx),
 // 32 on RDNA (gfx10/11/12). Evaluates to 32 in the host compilation pass.
+#ifndef GSPLAT_WARP_SIZE
 #define GSPLAT_WARP_SIZE (::rocprim::arch::wavefront::min_size())
+#endif
 #endif
 
 namespace gsplat {
