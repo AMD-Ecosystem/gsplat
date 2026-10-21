@@ -8,6 +8,9 @@
 #include <hip/hip_cooperative_groups.h>
 #include <rocprim/warp/warp_reduce.hpp>
 #include <rocprim/functional.hpp> 
+#ifndef GSPLAT_WARP_SIZE
+#define GSPLAT_WARP_SIZE (::rocprim::arch::wavefront::min_size())
+#endif
 #endif
 
 namespace gsplat {
@@ -159,7 +162,7 @@ inline __device__ int32_t reduce_max_shuffle(int32_t val) {
     const unsigned long long mask = 0xFFFFFFFFFFFFFFFFULL;
 
     #pragma unroll
-    for (int offset = 32; offset > 0; offset /= 2) {
+    for (int offset = GSPLAT_WARP_SIZE / 2; offset > 0; offset /= 2) {
         val = max(val, __shfl_down_sync(mask, val, offset));
     }
     
@@ -311,7 +314,7 @@ inline __device__ void manual_dynamic_reduce_sum_vec2(
 ) {  
     // First, create a mask of all threads with matching labels  
     unsigned long long my_label_mask = 0;  
-    for (int i = 0; i < 64; ++i) {  
+    for (int i = 0; i < GSPLAT_WARP_SIZE; ++i) {  
         if (warp_active_mask & (1ULL << i)) {  
             long long lane_label = __shfl_sync(warp_active_mask, current_label, i);  
             if (lane_label == current_label) {  
@@ -361,7 +364,7 @@ inline __device__ void manual_dynamic_reduce_sum_vec3(
 ) {  
     // First, create a mask of all threads with matching labels  
     unsigned long long my_label_mask = 0;  
-    for (int i = 0; i < 64; ++i) {  
+    for (int i = 0; i < GSPLAT_WARP_SIZE; ++i) {  
         if (warp_active_mask & (1ULL << i)) {  
             long long lane_label = __shfl_sync(warp_active_mask, current_label, i);  
             if (lane_label == current_label) {  
@@ -414,7 +417,7 @@ inline __device__ void manual_dynamic_reduce_sum_vec4(
 ) {  
     // First, create a mask of all threads with matching labels  
     unsigned long long my_label_mask = 0;  
-    for (int i = 0; i < 64; ++i) {  
+    for (int i = 0; i < GSPLAT_WARP_SIZE; ++i) {  
         if (warp_active_mask & (1ULL << i)) {  
             long long lane_label = __shfl_sync(warp_active_mask, current_label, i);  
             if (lane_label == current_label) {  
@@ -471,7 +474,7 @@ inline __device__ void manual_dynamic_reduce_sum_mat3(
 ) {  
     // First, create a mask of all threads with matching labels  
     unsigned long long my_label_mask = 0;  
-    for (int i = 0; i < 64; ++i) {  
+    for (int i = 0; i < GSPLAT_WARP_SIZE; ++i) {  
         if (warp_active_mask & (1ULL << i)) {  
             long long lane_label = __shfl_sync(warp_active_mask, current_label, i);  
             if (lane_label == current_label) {  

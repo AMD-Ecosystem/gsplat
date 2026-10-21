@@ -578,6 +578,11 @@ def rasterization(
             # Silently change C from global #Cameras to local #Cameras.
             C = C_world[world_rank]
 
+            # image_ids still indexes the world-wide camera list, and the intersection
+            # stage would write tile offsets past a buffer sized for the local images.
+            # Distributed mode asserts no batch dimensions, so batch_ids is all zeros.
+            image_ids = camera_ids
+
         else:
             # Silently change C from global #Cameras to local #Cameras.
             C = C_world[world_rank]

@@ -318,6 +318,10 @@ def cli(fn: Callable, args: Any, verbose: bool = False) -> bool:
     if __name__ == "__main__":
         cli(fn, None, verbose=True)
     ```
+
+    Select the GPUs with one variable only. On ROCm, the HIP runtime aborts while
+    initialising if `HIP_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES` disagree, and a
+    container runtime may have set `HIP_VISIBLE_DEVICES` already.
     """
     assert torch.cuda.is_available(), "CUDA device is required!"
     if "OMPI_COMM_WORLD_SIZE" in os.environ:  # multi-node

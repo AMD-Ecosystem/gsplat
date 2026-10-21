@@ -3,18 +3,59 @@ import os
 import os.path as osp
 import pathlib
 import platform
+import subprocess
 import sys
 import re
 
 from setuptools import find_packages, setup
 
 IS_ROCM = True
-ROCM_HOME = "/opt/rocm"
 import torch
+
+
+def rocm_home_candidates():
+    """Yield plausible ROCm roots, best first. The rocm-sdk pip packages keep ROCm inside
+    site-packages, and side-by-side installs use a versioned directory, so it is not
+    always /opt/rocm."""
+    yield os.environ.get("ROCM_HOME")
+    yield os.environ.get("ROCM_PATH")
+    try:
+        yield subprocess.run(
+            [sys.executable, "-m", "rocm_sdk", "path", "--root"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except Exception:
+        pass
+    # Last: importing this freezes PyTorch's own ROCm root, which it derives from the
+    # location of hipcc and can therefore point at a prefix holding no headers.
+    try:
+        from torch.utils.cpp_extension import ROCM_HOME as TORCH_ROCM_HOME
+
+        yield TORCH_ROCM_HOME
+    except ImportError:
+        pass
+    yield "/opt/rocm"
+
+
+def get_rocm_home():
+    """Return the first candidate root that really holds the HIP headers."""
+    for root in rocm_home_candidates():
+        if root and osp.exists(osp.join(root, "include", "hip", "hip_runtime.h")):
+            return root
+    print("Warning: could not locate the HIP headers; falling back to /opt/rocm")
+    return "/opt/rocm"
+
+
+ROCM_HOME = get_rocm_home()
+# torch.utils.cpp_extension reads these on first import to find the HIP libraries; without
+# them the link step looks for libamdhip64 under a different prefix.
+os.environ.setdefault("ROCM_HOME", ROCM_HOME)
+os.environ.setdefault("ROCM_PATH", ROCM_HOME)
 
 __version__ = None
 exec(open("gsplat/version.py", "r").read())
-import subprocess
 
 def get_rocm_arch():
     """
@@ -229,7 +270,7 @@ def get_extensions():
             f"{os.environ['HOME']}/.local/include",
             f"/opt/conda/include",
             f"/opt/conda/envs/py_3.12/lib/python3.12/site-packages/",
-            f"/opt/rocm/include",
+            osp.join(ROCM_HOME, "include"),
         ]
 
         extension = CUDAExtension(

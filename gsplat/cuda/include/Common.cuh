@@ -17,6 +17,11 @@
 #include <hipcub/hipcub.hpp>
 #include <hipcub/block/block_reduce.hpp>
 #include <rocprim/warp/warp_reduce.hpp>
+// Hardware wavefront size of the device compile target: 64 on CDNA (gfx9xx),
+// 32 on RDNA (gfx10/11/12). Evaluates to 32 in the host compilation pass.
+#ifndef GSPLAT_WARP_SIZE
+#define GSPLAT_WARP_SIZE (::rocprim::arch::wavefront::min_size())
+#endif
 #endif
 
 namespace gsplat {
@@ -43,5 +48,34 @@ namespace gsplat {
         res = func(temp_storage.get(), temp_storage_bytes, __VA_ARGS__);  \
 	assert(res == hipSuccess);                                            \
     } while (false)
+#endif
+
+#ifdef USE_ROCM
+inline int device_wavefront_size(int device) {
+    int width = 0;
+    TORCH_CHECK(
+        hipDeviceGetAttribute(&width, hipDeviceAttributeWarpSize, device) ==
+            hipSuccess,
+        "hipDeviceGetAttribute(hipDeviceAttributeWarpSize) failed"
+    );
+    return width;
+}
+
+// The rasterization backward kernels reduce across a whole wavefront, so a tile must hold
+// at least one. With fewer threads the GPU raises HSA_STATUS_ERROR_EXCEPTION 0x1016, which
+// aborts the process rather than returning an error.
+inline void check_tile_size(uint32_t tile_size, int wavefront_size) {
+    TORCH_CHECK(
+        tile_size * tile_size >= static_cast<uint32_t>(wavefront_size),
+        "tile_size=",
+        tile_size,
+        " gives ",
+        tile_size * tile_size,
+        " threads per block, fewer than this GPU's wavefront of ",
+        wavefront_size,
+        " threads. The rasterization backward pass reduces across a whole wavefront. "
+        "Use tile_size 8 or larger."
+    );
+}
 #endif
 } // namespace gsplat
