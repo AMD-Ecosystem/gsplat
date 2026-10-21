@@ -144,12 +144,9 @@ def split(
     scales = torch.exp(params["scales"][sel])
     quats = F.normalize(params["quats"][sel], dim=-1)
     rotmats = normalized_quat_to_rotmat(quats)  # [N, 3, 3]
-    samples = torch.einsum(
-        "nij,nj,bnj->bni",
-        rotmats,
-        scales,
-        torch.randn(2, len(scales), 3, device=device),
-    )  # [2, N, 3]
+    # Must not be a batched matmul: some ROCm builds return wrong rows past batch 65536.
+    noise = scales[None] * torch.randn(2, len(scales), 3, device=device)  # [2, N, 3]
+    samples = (rotmats[None] * noise[:, :, None, :]).sum(-1)  # [2, N, 3]
 
     def param_fn(name: str, p: Tensor) -> Tensor:
         repeats = [2] + [1] * (p.dim() - 1)
@@ -365,5 +362,6 @@ def inject_noise_to_position(
         * (op_sigmoid(1 - opacities)).unsqueeze(-1)
         * scaler
     )
-    noise = torch.einsum("bij,bj->bi", covars, noise)
+    # Must not be a batched matmul; see split().
+    noise = (covars * noise[:, None, :]).sum(-1)
     params["means"].add_(noise)
