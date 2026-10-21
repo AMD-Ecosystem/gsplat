@@ -759,9 +759,16 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
     // Optimization for ROCm: Use smaller batch size to reduce shared memory usage
 
     const uint32_t block_size = tile_size * tile_size;
+    // The bs64 kernel broadcasts per-Gaussian registers across the whole block with
+    // __shfl, so it is only valid when one wavefront spans all 64 threads.
+    int device_warp_size = 0;
+    TORCH_CHECK(
+        hipDeviceGetAttribute(&device_warp_size, hipDeviceAttributeWarpSize, means2d.get_device()) == hipSuccess,
+        "hipDeviceGetAttribute(hipDeviceAttributeWarpSize) failed");
+    const bool use_bs64 = (block_size == 64) && (device_warp_size == 64);
     uint32_t max_batch_size;
     int64_t shmem_size;
-    if (block_size == 64) { // wave64-optimized path
+    if (use_bs64) { // wave64-optimized path
       max_batch_size = 32;
       //max_batch_size = min(max_batch_size, block_size);
       if (CDIM <= 32) {
@@ -813,7 +820,7 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
         );
     }
 #else
-    auto KERNEL = (block_size == 64) ?
+    auto KERNEL = use_bs64 ?
 	    rasterize_bs64_to_pixels_3dgs_bwd_kernel<CDIM, float> :
 	    rasterize_to_pixels_3dgs_bwd_kernel<CDIM, float>;
     hipError_t err = hipFuncSetAttribute(
