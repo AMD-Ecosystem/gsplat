@@ -766,6 +766,7 @@ void launch_rasterize_to_pixels_2dgs_bwd_kernel(
 
     //rocPRIM shared memory allocation
     const uint32_t block_size = tile_size * tile_size;
+    check_tile_size(tile_size, device_wavefront_size(means2d.get_device()));
     const uint32_t warps_per_block =
         (block_size + 31) / 32;                       // upper bound over 32- and 64-lane wavefronts
     std::size_t warp_scratch_bytes =
