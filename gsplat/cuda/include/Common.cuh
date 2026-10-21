@@ -17,6 +17,9 @@
 #include <hipcub/hipcub.hpp>
 #include <hipcub/block/block_reduce.hpp>
 #include <rocprim/warp/warp_reduce.hpp>
+// Hardware wavefront size of the device compile target: 64 on CDNA (gfx9xx),
+// 32 on RDNA (gfx10/11/12). Evaluates to 32 in the host compilation pass.
+#define GSPLAT_WARP_SIZE (::rocprim::arch::wavefront::min_size())
 #endif
 
 namespace gsplat {
