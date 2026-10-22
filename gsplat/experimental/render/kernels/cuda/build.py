@@ -240,6 +240,12 @@ def get_build_parameters():
         _rocm_inc = _rocm_sdk_include_dir()
         if _rocm_inc is not None:
             extra_cflags.append(f"-isystem{_rocm_inc}")
+            # ROCm 10.x ships libcu++ under include/hipccl/, not include/.
+            # Utils.cuh includes <cuda/std/limits>; a raw -I keeps hipify from
+            # rewriting the CCCL tree (same reason GLM is not in extra_include_paths).
+            _hipccl = os.path.join(_rocm_inc, "hipccl")
+            if os.path.isdir(os.path.join(_hipccl, "cuda", "std")):
+                extra_cflags.append(f"-I{_hipccl}")
         # torch links against _rocm_sdk_core/lib, which only has the versioned
         # libamdhip64.so.7; the unversioned link name -lamdhip64 needs lives in
         # _rocm_sdk_devel/lib. Add it so the final .so link resolves.

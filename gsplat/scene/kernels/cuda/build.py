@@ -96,7 +96,7 @@ def get_build_parameters() -> SimpleNamespace:
     if sys.platform == "win32":
         extra_cflags = ["/std:c++17", "-DWIN32_LEAN_AND_MEAN"]
     else:
-        extra_cflags = ["-std=c++17"]
+        extra_cflags = ["-std=c++20"]
 
     extra_cflags += ["-g", "-O0"] if DEBUG else ["-O3", "-DNDEBUG"]
     if os.name != "nt":
