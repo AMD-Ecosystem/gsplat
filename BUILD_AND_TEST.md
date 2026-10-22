@@ -20,6 +20,22 @@ features), and test `aioss-gsplat` on AMD ROCm. Verified on the environment belo
 
 ---
 
+## Install PyTorch and ROCm 10.1
+
+Create a virtual environment, then install the stable ROCm 10.1 torch wheel
+and the matching SDK (`hipcc` comes from the `devel` extra). `device-gfx942`
+is MI300X / MI325X; swap it for another `[device-*]` extra if needed.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ \
+    "torch[device-gfx942]==2.14.0+rocm10.1.0" \
+    "rocm[libraries,devel,device-gfx942]==10.1.0"
+```
+
+---
+
 ## Step 0 — Activate environment
 
 Every shell that builds or tests must have the venv **and** the ROCm env sourced.
