@@ -147,9 +147,7 @@ std::tuple<at::Tensor, at::Tensor, int64_t> compute_batch_csr(
         );
     }
     // batch_offsets[0..num_tiles]: exclusive prefix sum with a trailing sum.
-    // PyTorch 2.14 on ROCm promotes integer cumsum to int64 even when at::kInt
-    // is requested. The raster kernels read these offsets as int32.
-    auto batch_offsets_tail = at::cumsum(batches_per_tile_t, 0, at::kLong).to(at::kInt);
+    auto batch_offsets_tail = at::cumsum(batches_per_tile_t, 0, at::kInt);
     auto batch_offsets_t    = at::cat({at::zeros({1}, int_opts), batch_offsets_tail});
     const int64_t total_batches
         = num_tiles == 0 ? int64_t{0}
