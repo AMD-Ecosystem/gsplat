@@ -65,6 +65,52 @@ from gsplat.cuda._torch_cameras import _viewmat_to_pose
 from gsplat.cuda._constants import ALPHA_THRESHOLD
 from gsplat.cuda._torch_impl_lidar import ANGLE_TO_PIXEL_SCALING_FACTOR
 
+# --- Pytest Fixture for Profiling ---
+import re
+@pytest.fixture(autouse=True)
+def profile_test_with_torch(request):
+    """
+    An autouse fixture that profiles each test function using torch.profiler.
+
+    Profiling is only enabled if the environment variable ENABLE_PROFILER is set to "1".
+    The output trace is saved in a 'torch_prof/logs/tests/' directory, with a subdirectory named
+    after the specific test being run.
+    """
+    # Check if the profiler is enabled via environment variable
+    if os.getenv("ENABLE_PROFILER") != "1":
+        yield # Proceed with the test without profiling
+        return
+
+    # Sanitize the test's node ID to create a valid directory name for the trace.
+    # e.g., 'test_projection[fused0-pinhole-()]' -> 'test_projection_fused0_pinhole___'
+    node_id = request.node.nodeid
+    sanitized_node_id = re.sub(r'[:\[\]\-/]', '_', node_id.split("::")[-1])
+
+    # Define profiler activities
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+    log_dir = f"./torch_prof/logs/tests/{sanitized_node_id}"
+    print(f"\n[Profiler] Enabled for {node_id}.")
+    print(f"[Profiler] Trace will be saved to '{log_dir}'")
+
+    # The 'with' block ensures the profiler starts and stops correctly
+    with torch.profiler.profile(
+        activities=activities,
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(log_dir),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True
+    ) as prof:
+        yield # This is where the actual test function runs
+
+    # This code runs after the test has completed
+    print(f"\n[Profiler] Results for {node_id}:")
+    # Print a summary table to the console, sorted by total CUDA time
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+
+
 device = torch.device("cuda:0")
 
 
@@ -2574,12 +2620,8 @@ def test_rasterize_to_pixels(test_data, channels: int, batch_dims: Tuple[int, ..
     opacities = torch.broadcast_to(opacities[..., None, :], batch_dims + (C, N))
 
     # Identify intersecting tiles.
-    # NOTE: CDIM=128 needs the smaller tile so the backward's per-block
-    # shared memory (tile_size^2 * CDIM * 4 bytes) stays below the device limit;
-    # the forward dispatches to a matching (TILE_SIZE=4, CTA_SIZE=16) kernel variant.
-    # When we also convert the 3DGS backward rasterizer pass, it will require much
-    # less shared memory since we're iterating with PPT=4 and will therefore be able
-    # to remove tile_size=4 both here and in the forward rasterizer.
+    # CDIM=128 needs a smaller tile so backward shared memory stays within
+    # device limits (classic 3DGS supports tile_size in {4, 16} only).
     tile_size = 16 if channels <= 32 else 4
     tile_width = math.ceil(width / float(tile_size))
     tile_height = math.ceil(height / float(tile_size))
