@@ -50,25 +50,25 @@ To use GSplat, you need the following prerequisites:
    For ROCm 7.0.0:
 
    ```bash
-   pip install amd_gsplat --extra-index-url=https://pypi.amd.com/rocm-7.0.0/simple/
+   pip install gsplat --extra-index-url=https://pypi.amd.com/rocm-7.0.0/simple/
    ```
 
    For ROCm 6.4.3:
 
    ```bash
-   pip install amd_gsplat --extra-index-url=https://pypi.amd.com/rocm-6.4.3/simple/
+   pip install gsplat --extra-index-url=https://pypi.amd.com/rocm-6.4.3/simple/
    ```
 
 4. Verify the installation:
 
    ```bash
-   pip show amd_gsplat
+   pip show gsplat
    ```
 
 5. The output should show as follows:
 
    ```bash
-   Name: amd_gsplat
+   Name: gsplat
    Version: 1.5.3+fec758f
    Summary: Python package for differentiable rasterization of Gaussians
    Home-page: https://github.com/rocm/gsplat
