@@ -2,13 +2,43 @@
 
 End-to-end setup for building and benchmarking this repo
 (`AMD-Ecosystem/gsplat`, branch `sync/mi45x_support`) on AMD `gfx1250` A0 silicon
-with the ROCm pip ("whl-next") stack. For MI300X / MI325X (`gfx942`), see
-[gfx942 (MI300X / MI325X)](#gfx942-mi300x--mi325x).
+with the ROCm pip ("whl-next") stack.
 
 > **The single most important rule:** create the Python venv **OUTSIDE** this
 > repository. If the ROCm SDK ends up under the repo (the build directory),
 > PyTorch's hipify rewrites the SDK headers in place and the HIP build dies with
 > thrust/hipcub `redefinition` errors. See Troubleshooting #2.
+
+---
+
+## Verified working build
+
+The exact stack below was confirmed end-to-end on this hardware: a full
+30,000-step Mip-NeRF 360 `stump` training run completed, including densification
+(which exercises hipBLASLt GEMM) — PSNR 26.70 / SSIM 0.777 / LPIPS 0.146 at
+~96 steps/s, render ~2.4 ms/image.
+
+| Component | Verified value |
+| --- | --- |
+| ROCm / pip tag | `10.3.0a20261105` (nightly `whl-next`) |
+| PyTorch | `2.14.0+rocm10.3.0a20261105` |
+| HIP runtime | `7.18.26441` |
+| gsplat | `1.5.3` (built from source for `gfx1250`, wave32) |
+| Python | 3.12 |
+| amdgpu / KFD driver | `7.1.0.31300009` |
+| GPU | `gfx1250` A0 (wave32); reports as "AMD Radeon Graphics" |
+| Required runtime flag | `HSA_DISABLE_GFX12_STRICT=1` |
+
+With `HSA_DISABLE_GFX12_STRICT=1` the device enumerates as plain `gfx1250`,
+torch's device kernels load, and hipBLASLt GEMMs resolve against the A0
+`gfx1250v0` Tensile library — no `TORCH_BLAS_PREFER_HIPBLASLT=0` needed.
+
+The `10.2.0a20261019` stack (torch `2.14.0+rocm10.2.0a20261019`, HIP
+`7.17.26413`) was also tested: general/elementwise kernels run and the device
+enumerates as plain `gfx1250`, but **every hipBLASLt GEMM fails** — its
+`gfx1250v0/` directory ships no `TensileLibrary_lazy_gfx1250.dat` master index,
+so training dies at the first densification `einsum` with
+`HIPBLAS_STATUS_INVALID_VALUE`. Use 10.3.0a instead.
 
 ---
 
@@ -119,19 +149,20 @@ Notes:
 
 ---
 
-## 4. Get the dataset (Mip-NeRF 360 "garden")
+## 4. Get the dataset (Mip-NeRF 360 "stump")
 
 The scene is only distributed inside the full `360_v2.zip`; there is no
-per-scene download. To save space, extract just `garden`:
+per-scene download. To save space, extract just `stump` (the smallest scene,
+125 images):
 
 ```bash
 cd /path/to/gsplat/examples
 mkdir -p data/360_v2
 curl -L -o /tmp/360_v2.zip http://storage.googleapis.com/gresearch/refraw360/360_v2.zip
-unzip /tmp/360_v2.zip "garden/*" -d data/360_v2
+unzip /tmp/360_v2.zip "stump/*" -d data/360_v2
 rm /tmp/360_v2.zip
 # verify the COLMAP model exists:
-ls data/360_v2/garden/sparse/0
+ls data/360_v2/stump/sparse/0
 ```
 
 (Full set: `python datasets/download_dataset.py --dataset mipnerf360`.)
@@ -153,84 +184,74 @@ export HSA_DISABLE_GFX12_STRICT=1
 # These have the hipBLASLt gfx1250v0 packaging bug; route GEMMs through rocBLAS:
 #   export TORCH_BLAS_PREFER_HIPBLASLT=0
 
-# Example: examples/simple_trainer
+# Example: single-scene training (examples/simple_trainer.py)
 cd /path/to/gsplat/examples
 CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default \
-  --data_dir data/360_v2/garden/ --data_factor 4 \
-  --result_dir ./results/garden
-
-# Example: the standalone benchmark
-cd /home/dgoplani/gsplat_benchmark
-bash run_benchmark.sh 0 22000
+  --data_dir data/360_v2/stump/ --data_factor 4 \
+  --result_dir ./results/stump
 ```
+
+## 6. Benchmark (from `examples/`)
+
+The repo's own benchmark suite lives in `examples/benchmarks/`. `basic.sh`
+trains + evals every Mip-NeRF 360 scene (`garden bicycle stump bonsai counter
+kitchen room`) and prints each scene's `val*`/`train*` stats JSONs (PSNR/SSIM/
+LPIPS, render time, Gaussian count, VRAM):
+
+```bash
+cd /path/to/gsplat/examples
+bash benchmarks/basic.sh
+```
+
+To benchmark a single scene (e.g. the smallest, `stump`), run the same command
+`basic.sh` uses for it:
+
+```bash
+cd /path/to/gsplat/examples
+CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default \
+  --disable_viewer --data_factor 4 --render_traj_path ellipse \
+  --data_dir data/360_v2/stump/ --result_dir ./results/stump
+# metrics: results/stump/stats/val_step29999.json (psnr/ssim/lpips/render time)
+#          results/stump/stats/train_step29999_rank0.json (train time/mem/num_GS)
+```
+
+### GPU kernel timing (`PROFILE` / `TILE_SIZE`)
+
+`examples/simple_trainer.py` reads two optional env vars, so kernel-level perf
+work needs no code changes:
+
+- `TILE_SIZE` — rasterizer tile size (e.g. `8` or `16`), applied to train + eval.
+- `PROFILE=1` — wraps a short window of steps in `torch.profiler` and dumps a
+  Chrome trace plus a top-kernel table (`kernel_summary.txt`, sorted by self
+  CUDA/HIP time) under `<result_dir>/profiler/`. Window via `PROFILE_START`
+  (default 1000) / `PROFILE_STEPS` (default 5).
+
+```bash
+cd /path/to/gsplat/examples
+PROFILE=1 PROFILE_START=21100 PROFILE_STEPS=3 TILE_SIZE=8 \
+CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default \
+  --disable_viewer --data_factor 4 --render_traj_path ellipse \
+  --data_dir data/360_v2/stump/ --result_dir ./results/stump
+# kernel table: results/stump/profiler/kernel_summary.txt
+# chrome trace: results/stump/profiler/trace_step21100_21102.json
+```
+
+> Compare kernels across runs using the **`CUDA time avg`** (per-call) column,
+> not the `Self CUDA` total — the latter scales with `PROFILE_STEPS` (call
+> count). Also profile at the **same** `PROFILE_START`, since per-step cost grows
+> with the Gaussian count as densification proceeds.
 
 ### Tile size / which wave32 kernel runs
 
-- On wave32 (gfx1250) the benchmark's `_auto_tile_size()` defaults to **16**
-  (256-thread block) for occupancy. That dispatches the **generic** multi-warp
-  kernel `rasterize_to_pixels_3dgs_bwd_kernel`.
-- The specialized zero-LDS **multi-tile** kernel
-  `rasterize_bs32_multitile_to_pixels_3dgs_bwd_kernel` only fires for an **8×8**
-  tile (`block_size == 64`) with `CDIM <= 16`. Force it with:
-
-```bash
-export TILE_SIZE=8
-```
-
-- Which is faster (8 = multi-tile vs 16 = generic+occupancy) is hardware
-  dependent — A/B both and compare the `rasterize_to_pixels_3dgs_bwd` time.
-
----
-
-## gfx942 (MI300X / MI325X)
-
-Steps 0 and 4 are the same. The differences are the device packages, the
-build arch, and the runtime: none of the gfx1250 workarounds
-(`HSA_DISABLE_GFX12_STRICT`, `TORCH_BLAS_PREFER_HIPBLASLT`) apply. The build
-selects wave64 automatically for `gfx9xx`.
-
-Install the stack (stable 10.1.0, in a venv outside the repo):
-
-```bash
-python3.12 -m venv ~/venvs/gsplat-942
-source ~/venvs/gsplat-942/bin/activate
-python -m pip install -i https://stable.repo.amd.com/rocm/whl-next/ \
-  "torch[device-gfx942]==2.14.0+rocm10.1.0" \
-  "rocm[libraries,devel,device-gfx942]==10.1.0"
-```
-
-Build and install gsplat:
-
-```bash
-cd /path/to/gsplat
-source ./path.sh
-export PYTORCH_ROCM_ARCH=gfx942
-rm -rf build gsplat/hip
-python setup.py bdist_wheel
-pip install --force-reinstall --no-deps dist/gsplat-*.whl
-pip install ninja numpy jaxtyping "rich>=12"
-```
-
-`--no-deps` keeps pip from replacing the ROCm torch with the PyPI one; the
-second line installs the rest of gsplat's dependencies.
-
-To run the tests, install pytest and the AMD nerfacc build (the PyTorch
-reference rasterizer in the tests uses it), with the same venv and `path.sh`:
-
-```bash
-pip install pytest
-git clone --recursive -b gpinkert/mi450 https://github.com/AMD-Ecosystem/nerfacc.git
-cd nerfacc
-python setup.py bdist_wheel
-pip install dist/nerfacc-*.whl
-cd /path/to/gsplat
-python setup.py build_ext --inplace   # pytest imports the in-repo gsplat/csrc.so
-python -m pytest tests/ -q
-```
-
-Tile size picks the backward kernel on gfx942: 16 runs the generic kernel
-`rasterize_to_pixels_3dgs_bwd_kernel`, and 8 runs the wave64 kernel
-`rasterize_bs64_to_pixels_3dgs_bwd_kernel`.
+- `TILE_SIZE` is passed straight to gsplat's `rasterization(..., tile_size=...)`;
+  on this build the default is **8**.
+- `TILE_SIZE=8` (`block_size == 64`, `CDIM <= 16`) dispatches the specialized
+  zero-LDS **multi-tile** kernel
+  `rasterize_bs32_multitile_to_pixels_3dgs_bwd_kernel`.
+- `TILE_SIZE=16` (256-thread block) dispatches the **generic** multi-warp kernel
+  `rasterize_to_pixels_3dgs_bwd_kernel` (more occupancy).
+- Which is faster is hardware dependent — A/B both and compare the per-call
+  `rasterize_to_pixels_3dgs_bwd` time (the `CUDA time avg` column).
 
 ---
 
@@ -248,13 +269,13 @@ venv, recreate it OUTSIDE the repo (step 1), reinstall (step 2), `rm -rf build
 gsplat/hip`, rebuild. The real sources in `gsplat/cuda/include/` are already
 correct; editing `gsplat/hip/` does nothing (it's regenerated).
 
-**3. `COLMAP directory data/360_v2/garden/sparse does not exist`**
+**3. `COLMAP directory data/360_v2/stump/sparse does not exist`**
 Dataset not downloaded, or wrong CWD. `--data_dir` is relative to `examples/`.
 See step 4.
 
 **4. `mkdir: cannot create directory '.../results/...': Permission denied`**
-The benchmark `results/` dir is owned by root from a prior run. Take ownership:
-`sudo chown -R "$USER":"$USER" /home/dgoplani/gsplat_benchmark/results`.
+The `results/` dir is owned by root from a prior run. Take ownership:
+`sudo chown -R "$USER":"$USER" /path/to/gsplat/examples/results`.
 
 **5. hipBLASLt / GEMM failure — behaviour depends on the ROCm stack**
 
@@ -291,8 +312,8 @@ load cleanly so the A0-correct `gfx1250v0` path can be used without the flag.
 | Item | Value |
 | --- | --- |
 | Repo / branch | `AMD-Ecosystem/gsplat` / `sync/mi45x_support` |
-| GPU arch | `gfx1250` (A0), wave32 · `gfx942` (MI300X / MI325X), wave64 |
+| GPU arch | `gfx1250` (A0), wave32 |
 | venv/conda env | **outside** the repo (e.g. `~/venvs/gsplat-eco`) |
 | ROCm stack | 10.3.0a20261105 (nightly, recommended) / 10.1.0 (stable) / 10.2.0a (older) — keep tags consistent |
-| Build | `source ./path.sh && export PYTORCH_ROCM_ARCH=gfx1250 && python setup.py bdist_wheel` (use `gfx942` on MI300X) |
+| Build | `source ./path.sh && export PYTORCH_ROCM_ARCH=gfx1250 && python setup.py bdist_wheel` |
 | Runtime env | 10.3.0a: `HSA_DISABLE_GFX12_STRICT=1` · 10.1/10.2: `TORCH_BLAS_PREFER_HIPBLASLT=0` · optional `TILE_SIZE=8` |
