@@ -255,55 +255,64 @@ CUDA_VISIBLE_DEVICES=0 python simple_trainer.py default \
 
 ---
 
-## Troubleshooting (errors seen on this hardware)
+## Troubleshooting
 
-**1. `operator torchvision::nms does not exist`**
-Stock PyPI torchvision installed instead of the ROCm build. Reinstall the
-`torchvision==<ver>+rocmXX` wheel (and `amd-torchvision-device-gfx1250`) matching
-your torch tag. See step 2.
+Each item below lists the **symptom**, the **cause**, and the **fix**.
 
-**2. hipcub/thrust `redefinition of 'is_non_bool_arithmetic'` (and friends) during `setup.py`**
-The venv is **inside** the repo, so hipify hipified the ROCm SDK headers in place
-(generating `*_hip.h` twins that collide with the originals). Fix: delete the
-venv, recreate it OUTSIDE the repo (step 1), reinstall (step 2), `rm -rf build
-gsplat/hip`, rebuild. The real sources in `gsplat/cuda/include/` are already
-correct; editing `gsplat/hip/` does nothing (it's regenerated).
+### 1. `operator torchvision::nms does not exist` at import
 
-**3. `COLMAP directory data/360_v2/stump/sparse does not exist`**
-Dataset not downloaded, or wrong CWD. `--data_dir` is relative to `examples/`.
-See step 4.
+- **Cause:** the stock PyPI `torchvision` was installed instead of the ROCm build.
+- **Fix:** reinstall the `torchvision==<ver>+rocmXX` wheel (and
+  `amd-torchvision-device-gfx1250`) matching your torch tag — see step 2.
 
-**4. `mkdir: cannot create directory '.../results/...': Permission denied`**
-The `results/` dir is owned by root from a prior run. Take ownership:
-`sudo chown -R "$USER":"$USER" /path/to/gsplat/examples/results`.
+### 2. `redefinition of 'is_non_bool_arithmetic'` (hipcub/thrust) during `setup.py`
 
-**5. hipBLASLt / GEMM failure — behaviour depends on the ROCm stack**
+- **Cause:** the Python environment was created **inside** the repository, so
+  hipify rewrote the ROCm SDK headers in place, generating `*_hip.h` twins that
+  collide with the originals.
+- **Fix:** recreate the environment outside the repo (step 1), reinstall (step 2),
+  then `rm -rf build gsplat/hip` and rebuild. Do not edit `gsplat/hip/`; it is
+  regenerated from `gsplat/cuda/` on every build.
 
-- **10.1.0:** `hipModuleLoad failed: .../Kernels.so-000-gfx1250-xnack-.hsaco: file not found`
-- **10.2.0a:** `rocblaslt error: gfx1250 device with asicRevision 0 (A0) needs the
-  gfx1250v0 GEMM library, but ".../gfx1250v0" holds no Tensile library`, ending in
-  `HIPBLAS_STATUS_INVALID_VALUE` from `hipblasLtMatmulAlgoGetHeuristic`. Even a
-  bare `a @ b` on GPU crashes. Root cause: the `gfx1250v0/` subtree ships kernel
-  objects but no `TensileLibrary_lazy_gfx1250.dat` master index, and the strict A0
-  guard refuses the generic `gfx1250/` kernels.
-  **Workaround (10.1/10.2 only):** route torch GEMMs through rocBLAS:
-  ```bash
-  export TORCH_BLAS_PREFER_HIPBLASLT=0
-  ```
-- **10.3.0a:** the `gfx1250v0` Tensile library now ships (hipBLASLt bug fixed),
-  but the device enumerates as `gfx1250-strict` by default and kernel loads fail
-  with `CUDA error: invalid kernel file` (`hipErrorInvalidKernelFile`) — the
-  shipped kernel objects aren't built for the strict ISA.
-  **Workaround (10.3.0a):**
-  ```bash
-  export HSA_DISABLE_GFX12_STRICT=1   # device -> plain gfx1250; GEMMs work via hipBLASLt
-  ```
-  No `TORCH_BLAS_PREFER_HIPBLASLT=0` is needed on 10.3.0a.
+### 3. `COLMAP directory data/360_v2/stump/sparse does not exist`
 
-Caveat: `HSA_DISABLE_GFX12_STRICT=1` makes hipBLASLt use the generic `gfx1250`
-library rather than the A0-specific `gfx1250v0` one, so A0 numerics remain
-provisional. Proper fix: a 10.3.0a build whose `gfx1250-strict` kernel objects
-load cleanly so the A0-correct `gfx1250v0` path can be used without the flag.
+- **Cause:** the dataset is missing, or the command was run from the wrong
+  directory (`--data_dir` is relative to `examples/`).
+- **Fix:** download the scene (step 4) and run from `examples/`.
+
+### 4. `mkdir: cannot create directory '.../results/...': Permission denied`
+
+- **Cause:** the `results/` directory was created by an earlier run under a
+  different user (e.g. root).
+- **Fix:** take ownership —
+  `sudo chown -R "$USER":"$USER" /path/to/gsplat/examples/results`.
+
+### 5. hipBLASLt GEMM failure on `gfx1250` A0
+
+The required fix depends on the ROCm version. On the recommended **10.3.0a**
+stack, a single environment variable resolves it.
+
+**ROCm 10.3.0a (recommended):**
+
+- **Symptom:** `CUDA error: invalid kernel file` (`hipErrorInvalidKernelFile`)
+  on the first GPU operation.
+- **Cause:** the runtime enumerates the A0 device as `gfx1250-strict`, and the
+  shipped kernel objects are not built for that strict ISA, so kernel loads fail.
+- **Fix:** export `HSA_DISABLE_GFX12_STRICT=1`. The device then enumerates as
+  plain `gfx1250`, kernels load, and hipBLASLt runs GEMMs against the
+  A0-specific `gfx1250v0` Tensile library (confirmed via `HIPBLASLT_LOG_LEVEL`).
+  No other flag is required, and a full `stump` training run reproduces
+  reference quality (PSNR ≈ 26.7).
+
+**ROCm 10.1.0 / 10.2.0a (older):**
+
+- **Symptom:** 10.1.0 — `hipModuleLoad failed: ...gfx1250-xnack-.hsaco: file not
+  found`; 10.2.0a — `rocblaslt error: gfx1250 device ... needs the gfx1250v0 GEMM
+  library ... holds no Tensile library`, ending in `HIPBLAS_STATUS_INVALID_VALUE`
+  (even a bare `a @ b` fails).
+- **Cause:** these stacks do not ship a usable A0 `gfx1250v0` Tensile library.
+- **Fix:** route GEMMs through rocBLAS instead of hipBLASLt —
+  `export TORCH_BLAS_PREFER_HIPBLASLT=0`. Upgrading to 10.3.0a is recommended.
 
 ---
 
